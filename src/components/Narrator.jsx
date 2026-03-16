@@ -1,4 +1,5 @@
 import React from 'react';
+import './Narrator.css';
 
 const Narrator = ({ status, progress }) => {
   const getMessage = () => {
