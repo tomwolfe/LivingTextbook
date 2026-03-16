@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from 'react';
 import { loadModel, generateImage, unloadModel, detectCapabilities } from 'web-txt2img';
-import { env, AutoTokenizer } from '@huggingface/transformers';
+import { env, AutoTokenizer } from '@xenova/transformers';
 
 // Singleton state - prevents multiple loads and memory leaks
 let modelLoaded = false;
@@ -51,7 +51,8 @@ export const useImageGen = () => {
           console.log('Loading tokenizer...');
           env.allowLocalModels = false;
           env.useBrowserCache = true;
-          const tokenizer = await AutoTokenizer.from_pretrained('hf-internal-testing/clip-vit-base-patch32');
+          // Use Xenova's clip-vit-base-patch16 which is the expected model for SD-Turbo
+          const tokenizer = await AutoTokenizer.from_pretrained('Xenova/clip-vit-base-patch16');
           console.log('Tokenizer loaded');
           // Return the tokenizer function
           return (text, opts) => {
