@@ -5,7 +5,6 @@ import { env, AutoTokenizer } from '@huggingface/transformers';
 // Singleton state - prevents multiple loads and memory leaks
 let modelLoaded = false;
 let modelLoadPromise = null;
-let tokenizer = null;
 
 /**
  * Hook for WebGPU-accelerated text-to-image generation using web-txt2img
@@ -40,19 +39,25 @@ export const useImageGen = () => {
         return false;
       }
 
-      // Load tokenizer first (CLIP for SD-Turbo)
-      setStatus('Loading Tokenizer...');
-      env.allowLocalModels = false;
-      env.useBrowserCache = true;
-      tokenizer = await AutoTokenizer.from_pretrained('hf-internal-testing/clip-vit-base-patch32');
-      console.log('Tokenizer loaded');
-
       // Load model with progress tracking (use sd-turbo for mobile-friendly size)
+      // Provide tokenizer provider that returns the tokenizer function
       setStatus('Loading Model...');
       setLoading(true);
 
       modelLoadPromise = loadModel('sd-turbo', {
         backendPreference: ['webgpu'],
+        // Provide tokenizer provider - returns a function that tokenizes text
+        tokenizerProvider: async () => {
+          console.log('Loading tokenizer...');
+          env.allowLocalModels = false;
+          env.useBrowserCache = true;
+          const tokenizer = await AutoTokenizer.from_pretrained('hf-internal-testing/clip-vit-base-patch32');
+          console.log('Tokenizer loaded');
+          // Return the tokenizer function
+          return (text, opts) => {
+            return tokenizer(text, { padding: true, truncation: true, max_length: 77, ...opts });
+          };
+        },
       }, (progress) => {
         const pct = progress.pct != null ? Math.round(progress.pct) : null;
         const message = pct != null ? `Loading Model... ${pct}%` : 'Loading Model...';
@@ -144,7 +149,6 @@ export const useImageGen = () => {
       await unloadModel('sd-turbo');
       modelLoaded = false;
       modelLoadPromise = null;
-      tokenizer = null;
       initializedRef.current = false;
       setStatus('Model Unloaded');
     }
