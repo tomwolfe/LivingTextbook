@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
-import { Txt2ImgWorkerClient } from 'web-txt2img';
+import { Txt2ImgWorkerClient, detectCapabilities } from 'web-txt2img';
 
 // Singleton model client - prevents multiple loads and memory leaks
 let modelClient = null;
@@ -25,8 +25,10 @@ export const useImageGen = () => {
     }
 
     try {
-      // Detect WebGPU capabilities
-      const caps = await Txt2ImgWorkerClient.detect();
+      // Detect WebGPU capabilities using the standalone function
+      const caps = await detectCapabilities();
+      console.log('WebGPU capabilities:', caps);
+      
       if (!caps.webgpu || !caps.shaderF16) {
         setWebgpuSupported(false);
         console.warn('WebGPU not fully supported:', { 
@@ -41,6 +43,10 @@ export const useImageGen = () => {
         modelClient = Txt2ImgWorkerClient.createDefault();
       }
 
+      // Double-check capabilities via client
+      const clientCaps = await modelClient.detect();
+      console.log('Client capabilities:', clientCaps);
+
       // Load model with progress tracking (use sd-turbo for mobile-friendly size)
       setStatus('Loading Model...');
       setLoading(true);
@@ -48,11 +54,17 @@ export const useImageGen = () => {
       modelLoadPromise = modelClient.load('sd-turbo', {
         backendPreference: ['webgpu'],
       }, (progress) => {
-        const pct = Math.round(progress.pct * 100);
-        setStatus(`Loading Model... ${pct}%`);
+        const pct = progress.pct != null ? Math.round(progress.pct) : null;
+        const message = pct != null ? `Loading Model... ${pct}%` : 'Loading Model...';
+        setStatus(message);
       });
 
-      await modelLoadPromise;
+      const loadResult = await modelLoadPromise;
+      
+      if (!loadResult?.ok) {
+        throw new Error(loadResult?.message || 'Model load failed');
+      }
+      
       initializedRef.current = true;
       setStatus('Model Ready');
       setLoading(false);
@@ -60,7 +72,7 @@ export const useImageGen = () => {
     } catch (error) {
       console.error('Failed to initialize WebGPU model:', error);
       setWebgpuSupported(false);
-      setStatus('Error: WebGPU not supported');
+      setStatus(`Error: ${error.message}`);
       setLoading(false);
       return false;
     }
@@ -99,6 +111,8 @@ export const useImageGen = () => {
         (progress) => {
           if (progress.phase) {
             setStatus(`Generating: ${progress.phase}`);
+          } else if (progress.pct != null) {
+            setStatus(`Generating: ${Math.round(progress.pct)}%`);
           }
         },
         { busyPolicy: 'queue', debounceMs: 200 }
@@ -106,21 +120,21 @@ export const useImageGen = () => {
 
       const result = await promise;
       
-      if (result.ok) {
+      if (result?.ok && result?.blob) {
         // Create Object URL from the generated blob
         const imageUrl = URL.createObjectURL(result.blob);
         setStatus('Image Generated');
         setLoading(false);
         return imageUrl;
       } else {
-        console.error('Generation failed:', result.error);
-        setStatus('Generation Failed');
+        console.error('Generation failed:', result);
+        setStatus(`Generation Failed: ${result?.message || 'Unknown error'}`);
         setLoading(false);
         return null;
       }
     } catch (error) {
       console.error('Image generation error:', error);
-      setStatus('Error: Generation failed');
+      setStatus(`Error: ${error.message}`);
       setLoading(false);
       return null;
     }
