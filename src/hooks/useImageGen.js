@@ -1,10 +1,11 @@
 import { useState, useRef, useCallback } from 'react';
-import { Txt2ImgWorkerClient, detectCapabilities } from 'web-txt2img';
+import { loadModel, generateImage, unloadModel, detectCapabilities } from 'web-txt2img';
 import { env, AutoTokenizer } from '@huggingface/transformers';
 
-// Singleton model client - prevents multiple loads and memory leaks
-let modelClient = null;
+// Singleton state - prevents multiple loads and memory leaks
+let modelLoaded = false;
 let modelLoadPromise = null;
+let tokenizer = null;
 
 /**
  * Hook for WebGPU-accelerated text-to-image generation using web-txt2img
@@ -17,7 +18,7 @@ export const useImageGen = () => {
   const initializedRef = useRef(false);
 
   /**
-   * Initialize the model client (singleton pattern)
+   * Initialize the model (singleton pattern)
    * Call this early to pre-load the model while user is typing
    */
   const initModel = useCallback(async () => {
@@ -26,7 +27,7 @@ export const useImageGen = () => {
     }
 
     try {
-      // Detect WebGPU capabilities using the standalone function
+      // Check WebGPU capabilities
       const caps = await detectCapabilities();
       console.log('WebGPU capabilities:', caps);
       
@@ -39,39 +40,19 @@ export const useImageGen = () => {
         return false;
       }
 
-      // Create singleton client if not exists
-      if (!modelClient) {
-        modelClient = Txt2ImgWorkerClient.createDefault();
-      }
-
-      // Double-check capabilities via client
-      const clientCaps = await modelClient.detect();
-      console.log('Client capabilities:', clientCaps);
+      // Load tokenizer first (CLIP for SD-Turbo)
+      setStatus('Loading Tokenizer...');
+      env.allowLocalModels = false;
+      env.useBrowserCache = true;
+      tokenizer = await AutoTokenizer.from_pretrained('hf-internal-testing/clip-vit-base-patch32');
+      console.log('Tokenizer loaded');
 
       // Load model with progress tracking (use sd-turbo for mobile-friendly size)
-      // Provide tokenizer from @huggingface/transformers
       setStatus('Loading Model...');
       setLoading(true);
 
-      modelLoadPromise = modelClient.load('sd-turbo', {
+      modelLoadPromise = loadModel('sd-turbo', {
         backendPreference: ['webgpu'],
-        // Provide tokenizer using @huggingface/transformers
-        tokenizerProvider: async (text) => {
-          // Lazy load tokenizer on first use
-          if (!initModel.tokenizer) {
-            env.allowLocalModels = false;
-            env.useBrowserCache = true;
-            initModel.tokenizer = await AutoTokenizer.from_pretrained(
-              'hf-internal-testing/clip-vit-base-patch32'
-            );
-          }
-          const inputs = initModel.tokenizer(text, { 
-            padding: true, 
-            truncation: true, 
-            max_length: 77 
-          });
-          return inputs.input_ids.data;
-        },
       }, (progress) => {
         const pct = progress.pct != null ? Math.round(progress.pct) : null;
         const message = pct != null ? `Loading Model... ${pct}%` : 'Loading Model...';
@@ -84,6 +65,7 @@ export const useImageGen = () => {
         throw new Error(loadResult?.message || 'Model load failed');
       }
       
+      modelLoaded = true;
       initializedRef.current = true;
       setStatus('Model Ready');
       setLoading(false);
@@ -102,7 +84,7 @@ export const useImageGen = () => {
    * @param {string} prompt - The text description of the image to generate
    * @returns {Promise<string|null>} - Object URL of the generated image, or null on failure
    */
-  const generateImage = useCallback(async (prompt) => {
+  const generateImageFromPrompt = useCallback(async (prompt) => {
     // Auto-initialize if not already done
     if (!initializedRef.current) {
       const initialized = await initModel();
@@ -116,28 +98,22 @@ export const useImageGen = () => {
       await modelLoadPromise;
     }
 
+    if (!modelLoaded) {
+      console.error('Model not loaded');
+      return null;
+    }
+
     setLoading(true);
     setStatus('Generating Image...');
 
     try {
-      const { promise } = modelClient.generate(
-        { 
-          prompt, 
-          seed: Math.floor(Math.random() * 1000000),
-          width: 512,
-          height: 512
-        },
-        (progress) => {
-          if (progress.phase) {
-            setStatus(`Generating: ${progress.phase}`);
-          } else if (progress.pct != null) {
-            setStatus(`Generating: ${Math.round(progress.pct)}%`);
-          }
-        },
-        { busyPolicy: 'queue', debounceMs: 200 }
-      );
-
-      const result = await promise;
+      const result = await generateImage({
+        model: 'sd-turbo',
+        prompt, 
+        seed: Math.floor(Math.random() * 1000000),
+        width: 512,
+        height: 512,
+      });
       
       if (result?.ok && result?.blob) {
         // Create Object URL from the generated blob
@@ -163,20 +139,21 @@ export const useImageGen = () => {
    * Cleanup function to unload the model and free memory
    * Call this when component unmounts or when switching to a different feature
    */
-  const unloadModel = useCallback(async () => {
-    if (modelClient) {
-      await modelClient.unload();
-      modelClient = null;
+  const unloadModelCallback = useCallback(async () => {
+    if (modelLoaded) {
+      await unloadModel('sd-turbo');
+      modelLoaded = false;
       modelLoadPromise = null;
+      tokenizer = null;
       initializedRef.current = false;
       setStatus('Model Unloaded');
     }
   }, []);
 
   return { 
-    generateImage, 
+    generateImage: generateImageFromPrompt, 
     initModel,
-    unloadModel,
+    unloadModel: unloadModelCallback,
     loading, 
     status,
     webgpuSupported
