@@ -169,8 +169,19 @@ export const ModelProvider = ({ children }) => {
       // Create tokenizer provider
       const tokenizerProvider = async () => {
         const tokenizer = await AutoTokenizer.from_pretrained(config.imageGen.tokenizerModel);
-        return (text, opts) =>
-          tokenizer(text, { padding: true, truncation: true, max_length: 77, ...opts });
+        tokenizer.pad_token_id = 0;
+        return async (text, opts) => {
+          const result = await tokenizer(text, {
+            padding: 'max_length',
+            truncation: true,
+            max_length: 77,
+            ...opts,
+          });
+          // Ensure we return plain array, not tensor
+          return {
+            input_ids: Array.isArray(result.input_ids) ? result.input_ids : result.input_ids.tolist?.() || [...result.input_ids],
+          };
+        };
       };
 
       // Load model
