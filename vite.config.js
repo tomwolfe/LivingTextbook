@@ -14,7 +14,7 @@ export default defineConfig({
     })
   ],
   optimizeDeps: {
-    exclude: ['web-txt2img'],
+    exclude: ['web-txt2img', 'onnxruntime-web'],
   },
   server: {
     headers: {
