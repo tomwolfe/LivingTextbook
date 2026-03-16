@@ -4,6 +4,7 @@ import { pipeline, env } from '@huggingface/transformers';
 // Modern configuration to avoid local lookups and use caching
 env.allowLocalModels = false;
 env.useBrowserCache = true;
+env.logLevel = 'error'; 
 
 export const useTextGen = () => {
   const [loading, setLoading] = useState(false);
