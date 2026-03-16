@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { pipeline, env } from '@huggingface/transformers'; // 1. Use the new package
+import { pipeline, env } from '@huggingface/transformers'; 
 
-// 2. Modern configuration to avoid local lookups and use caching
+// Modern configuration to avoid local lookups and use caching
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 
@@ -17,11 +17,11 @@ export const useTextGen = () => {
     setLoading(true);
     setStatus('Loading Model...');
     try {
-      // 3. Recommended model for browser use
-      const modelId = 'onnx-community/SmolLM2-135M-Instruct'; 
+      // Use the optimized model ID specifically for Transformers.js / WebGPU
+      const modelId = 'onnx-community/SmolLM2-135M-Instruct-ONNX-MHA'; 
       
       generator.current = await pipeline('text-generation', modelId, {
-        device: 'webgpu', // Uses the faster WebGPU backend
+        device: 'webgpu', 
         progress_callback: (p) => {
           if (p.status === 'progress') {
             setProgress(p.progress.toFixed(2));
@@ -32,7 +32,7 @@ export const useTextGen = () => {
     } catch (err) {
       console.warn("WebGPU not available or failed, falling back to CPU", err);
       try {
-        const modelId = 'onnx-community/SmolLM2-135M-Instruct';
+        const modelId = 'onnx-community/SmolLM2-135M-Instruct-ONNX-MHA';
         generator.current = await pipeline('text-generation', modelId, {
             progress_callback: (p) => {
               if (p.status === 'progress') {
