@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback } from 'react';
 import { Txt2ImgWorkerClient, detectCapabilities } from 'web-txt2img';
+import { env, AutoTokenizer } from '@huggingface/transformers';
 
 // Singleton model client - prevents multiple loads and memory leaks
 let modelClient = null;
@@ -48,11 +49,29 @@ export const useImageGen = () => {
       console.log('Client capabilities:', clientCaps);
 
       // Load model with progress tracking (use sd-turbo for mobile-friendly size)
+      // Provide tokenizer from @huggingface/transformers
       setStatus('Loading Model...');
       setLoading(true);
 
       modelLoadPromise = modelClient.load('sd-turbo', {
         backendPreference: ['webgpu'],
+        // Provide tokenizer using @huggingface/transformers
+        tokenizerProvider: async (text) => {
+          // Lazy load tokenizer on first use
+          if (!initModel.tokenizer) {
+            env.allowLocalModels = false;
+            env.useBrowserCache = true;
+            initModel.tokenizer = await AutoTokenizer.from_pretrained(
+              'hf-internal-testing/clip-vit-base-patch32'
+            );
+          }
+          const inputs = initModel.tokenizer(text, { 
+            padding: true, 
+            truncation: true, 
+            max_length: 77 
+          });
+          return inputs.input_ids.data;
+        },
       }, (progress) => {
         const pct = progress.pct != null ? Math.round(progress.pct) : null;
         const message = pct != null ? `Loading Model... ${pct}%` : 'Loading Model...';
