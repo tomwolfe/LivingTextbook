@@ -1,5 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { pipeline } from '@xenova/transformers';
+import { pipeline, env } from '@huggingface/transformers'; // 1. Use the new package
+
+// 2. Modern configuration to avoid local lookups and use caching
+env.allowLocalModels = false;
+env.useBrowserCache = true;
 
 export const useTextGen = () => {
   const [loading, setLoading] = useState(false);
@@ -7,29 +11,29 @@ export const useTextGen = () => {
   const [status, setStatus] = useState('Idle');
   const generator = useRef(null);
 
-  useEffect(() => {
-    // Initializing generator on first load or on demand
-  }, []);
-
   const initGenerator = async () => {
     if (generator.current) return;
     
     setLoading(true);
     setStatus('Loading Model...');
     try {
-      generator.current = await pipeline('text-generation', 'Xenova/SmolLM2-135M-Instruct', {
+      // 3. Recommended model for browser use
+      const modelId = 'onnx-community/SmolLM2-135M-Instruct'; 
+      
+      generator.current = await pipeline('text-generation', modelId, {
+        device: 'webgpu', // Uses the faster WebGPU backend
         progress_callback: (p) => {
           if (p.status === 'progress') {
             setProgress(p.progress.toFixed(2));
           }
         },
-        device: 'webgpu' // Attempt WebGPU, falls back automatically in newer Transformers.js
       });
-      setStatus('Model Ready');
+      setStatus('Model Ready (WebGPU)');
     } catch (err) {
-      console.warn("WebGPU not available, falling back to CPU", err);
+      console.warn("WebGPU not available or failed, falling back to CPU", err);
       try {
-        generator.current = await pipeline('text-generation', 'Xenova/SmolLM2-135M-Instruct', {
+        const modelId = 'onnx-community/SmolLM2-135M-Instruct';
+        generator.current = await pipeline('text-generation', modelId, {
             progress_callback: (p) => {
               if (p.status === 'progress') {
                 setProgress(p.progress.toFixed(2));
@@ -64,6 +68,7 @@ export const useTextGen = () => {
       });
 
       setStatus('Generation Complete');
+      // Extract content from chat format
       return output[0].generated_text[output[0].generated_text.length - 1].content;
     } catch (err) {
       setStatus('Generation Error');
