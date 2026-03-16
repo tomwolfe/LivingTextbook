@@ -13,6 +13,9 @@ export default defineConfig({
       promiseImportName: i => `__tla_${i}`
     })
   ],
+  optimizeDeps: {
+    exclude: ['web-txt2img'],
+  },
   server: {
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
