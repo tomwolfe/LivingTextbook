@@ -400,7 +400,7 @@ async function generatePage(pageNum, pageOutline) {
   // Step 2: Generate text and image in parallel
   const [content, imageResult] = await Promise.all([
     generateText(enhancedTextPrompt, { complexity: currentSettings.complexity }),
-    generateImageFromPrompt(imagePrompt),
+    generateImageFromPrompt(imagePrompt.positive, { negativePrompt: imagePrompt.negative }),
   ]);
 
   // Step 3: Generate quip after content is ready
