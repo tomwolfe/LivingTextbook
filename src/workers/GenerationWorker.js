@@ -406,8 +406,8 @@ async function generatePage(pageNum, pageOutline) {
   // Step 3: Generate quip after content is ready
   let quip = null;
   if (content) {
-    const quipPromptResult = generateQuipPrompt(content, currentSettings.subject);
-    quip = await generateQuip(quipPromptResult.quipPrompt);
+    const quipPrompt = generateQuipPrompt(content, currentSettings.subject);
+    quip = await generateQuip(quipPrompt);
   }
 
   // Store this page's content for semantic consistency with next page
