@@ -348,10 +348,13 @@ async function generateImageFromPrompt(prompt, options = {}) {
 
       // Convert blob to ArrayBuffer for transfer to main thread
       const arrayBuffer = await result.blob.arrayBuffer();
-      return { 
-        blob: arrayBuffer, 
-        type: result.blob.type, 
-        cached: false 
+      // Recreate blob from ArrayBuffer for the main thread
+      const transferredBlob = new Blob([arrayBuffer], { type: result.blob.type });
+      const imageUrl = URL.createObjectURL(transferredBlob);
+      return {
+        blob: transferredBlob,
+        imageUrl,
+        cached: false
       };
     } else {
       throw new Error(result?.message || 'Generation failed');
