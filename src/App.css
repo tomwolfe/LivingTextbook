@@ -1,25 +1,89 @@
 /* App Layout Styles */
+
+/* CSS Custom Properties for theming */
+:root {
+  /* Light mode (default) */
+  --bg-primary: #f1f5f9;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f8fafc;
+  --text-primary: #1e293b;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+  --border-color: #e2e8f0;
+  --accent-primary: #6366f1;
+  --accent-secondary: #3b82f6;
+  --accent-success: #10b981;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.1);
+  --shadow-md: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
+}
+
+/* Dark mode */
+html.dark-mode {
+  --bg-primary: #0f172a;
+  --bg-secondary: #1e293b;
+  --bg-tertiary: #334155;
+  --text-primary: #f1f5f9;
+  --text-secondary: #cbd5e1;
+  --text-muted: #64748b;
+  --border-color: #475569;
+  --accent-primary: #818cf8;
+  --accent-secondary: #60a5fa;
+  --accent-success: #34d399;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+}
+
 .app-container {
   min-height: 100vh;
-  background-color: #f1f5f9;
+  background-color: var(--bg-primary);
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   padding-bottom: 5rem;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Skip Link for Accessibility */
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1e293b;
+  color: white;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.5rem;
+  text-decoration: none;
+  font-weight: 600;
+  z-index: 9999;
+  transition: top 0.2s ease;
+}
+
+.skip-link:focus {
+  top: 1rem;
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+
+/* Focus styles for main content */
+#main-content:focus {
+  outline: none;
 }
 
 .app-header {
-  background: white;
+  background: var(--bg-secondary);
   padding: 1rem 4rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+  box-shadow: var(--shadow-sm);
   margin-bottom: 3rem;
+  transition: background-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .logo {
   font-size: 1.5rem;
   font-weight: 800;
-  color: #1e293b;
+  color: var(--text-primary);
+  transition: color 0.3s ease;
 }
 
 .header-right {
@@ -28,13 +92,50 @@
   gap: 1rem;
 }
 
+.header-btn {
+  background: var(--accent-secondary);
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.header-btn:hover:not(:disabled) {
+  background: var(--accent-primary);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.header-btn:disabled {
+  background: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.theme-btn {
+  background: var(--bg-tertiary);
+  border: 2px solid var(--border-color);
+  font-size: 1.25rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.theme-btn:hover:not(:disabled) {
+  background: var(--border-color);
+}
+
 .status-badge {
-  background: #e2e8f0;
+  background: var(--bg-tertiary);
   padding: 0.5rem 1rem;
   border-radius: 2rem;
   font-size: 0.875rem;
   font-weight: 600;
-  color: #475569;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  transition: all 0.3s ease;
 }
 
 .app-main {

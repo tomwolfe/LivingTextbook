@@ -6,14 +6,17 @@
 export const config = {
   // Text Generation Model Configuration
   textGen: {
-    // WebGPU-optimized model (quantized for smaller footprint)
+    // Fast model (quantized for smaller footprint) - for low complexity
     // Using MHA variant for better performance
-    modelIdWebGPU: 'onnx-community/SmolLM2-135M-Instruct-ONNX-MHA',
-    // Fallback CPU model (same model, different execution)
-    modelIdCPU: 'onnx-community/SmolLM2-135M-Instruct-ONNX-MHA',
-    // Alternative: Even smaller model (360M params but more quantized)
-    // modelIdWebGPU: 'onnx-community/Qwen2.5-0.5B-Instruct-ONNX',
-    // modelIdCPU: 'onnx-community/Qwen2.5-0.5B-Instruct-ONNX',
+    fastModelId: 'onnx-community/SmolLM2-135M-Instruct-ONNX-MHA',
+    // Quality model - for high complexity content
+    qualityModelId: 'onnx-community/Qwen2.5-0.5B-Instruct-ONNX',
+    // Fallback CPU models
+    fastModelIdCPU: 'onnx-community/SmolLM2-135M-Instruct-ONNX-MHA',
+    qualityModelIdCPU: 'onnx-community/Qwen2.5-0.5B-Instruct-ONNX',
+    // Complexity threshold for switching models (0-1)
+    complexityThreshold: 0.7,
+    // Generation parameters
     maxNewTokens: 150,
     temperature: 0.7,
     doSample: true,
@@ -27,6 +30,13 @@ export const config = {
     width: 512,
     height: 512,
     seedRange: { min: 0, max: 1000000 },
+    // Speed mode settings (for low-memory devices)
+    speedModeWidth: 384,
+    speedModeHeight: 384,
+    speedModeSteps: 2,
+    // Extreme speed mode (text-only or very low res)
+    extremeSpeedModeWidth: 256,
+    extremeSpeedModeHeight: 256,
     // Note: For smaller image models, consider:
     // - 'tiny-sd' (smaller but lower quality)
     // - 'latent-consistency-model' (faster inference)

@@ -2,6 +2,8 @@ import React, { createContext, useContext, useState, useCallback, useEffect, use
 import { pipeline, env, AutoTokenizer } from '@huggingface/transformers';
 import { loadModel, generateImage, unloadModel, detectCapabilities } from 'web-txt2img';
 import { config } from '../config';
+import { detectDeviceResources, getRecommendedSettings } from '../utils/resourceDetector';
+import { cacheImage, getCachedImage, saveBook, getBook, getAllBooks, deleteBook } from '../utils/imageCache';
 
 // Configure transformers.js environment
 env.allowLocalModels = config.transformers.allowLocalModels;
@@ -49,9 +51,16 @@ const ModelContext = createContext(null);
  * Provider component that manages AI model lifecycle
  */
 export const ModelProvider = ({ children }) => {
-  // Text generation model state
+  // Text generation model state (fast model - SmolLM2)
   const [textModelState, setTextModelState] = useState(createInitialModelState());
   const textGenerator = useRef(null);
+
+  // Quality text generation model state (Qwen2.5)
+  const [qualityTextModelState, setQualityTextModelState] = useState(createInitialModelState());
+  const qualityTextGenerator = useRef(null);
+
+  // Track which model is currently active
+  const [activeTextModel, setActiveTextModel] = useState('fast'); // 'fast' or 'quality'
 
   // Image generation model state
   const [imageModelState, setImageModelState] = useState(createInitialModelState());
@@ -61,8 +70,12 @@ export const ModelProvider = ({ children }) => {
   // WebGPU capability state
   const [webgpuCapabilities, setWebgpuCapabilities] = useState(null);
 
+  // Device resource state for Speed Mode
+  const [deviceResources, setDeviceResources] = useState(null);
+  const [speedMode, setSpeedMode] = useState(false);
+
   /**
-   * Detect WebGPU capabilities once on mount
+   * Detect WebGPU capabilities and device resources on mount
    */
   useEffect(() => {
     const detectCaps = async () => {
@@ -74,7 +87,28 @@ export const ModelProvider = ({ children }) => {
         setWebgpuCapabilities({ webgpu: false, shaderF16: false });
       }
     };
+
+    const detectResources = async () => {
+      try {
+        const resources = await detectDeviceResources();
+        setDeviceResources(resources);
+        setSpeedMode(resources.isLowMemory);
+      } catch (err) {
+        console.warn('Failed to detect device resources:', err);
+        setDeviceResources({
+          deviceMemory: null,
+          hardwareConcurrency: null,
+          hasWebGPU: false,
+          hasShaderF16: false,
+          isLowMemory: true,
+          limitations: ['Resource detection failed'],
+        });
+        setSpeedMode(true);
+      }
+    };
+
     detectCaps();
+    detectResources();
   }, []);
 
   /**
@@ -90,57 +124,68 @@ export const ModelProvider = ({ children }) => {
   }, []);
 
   /**
-   * Initialize text generation model
+   * Initialize a text generation model (fast or quality)
    */
-  const initTextModel = useCallback(async () => {
-    if (textGenerator.current) {
+  const initTextModel = useCallback(async (modelType = 'fast') => {
+    const isQuality = modelType === 'quality';
+    const generatorRef = isQuality ? qualityTextGenerator : textGenerator;
+    const setState = isQuality ? setQualityTextModelState : setTextModelState;
+
+    if (generatorRef.current) {
       return true;
     }
 
-    setTextModelState(prev => ({ ...prev, status: ModelStatus.LOADING, loading: true, error: null }));
+    setState(prev => ({ ...prev, status: ModelStatus.LOADING, loading: true, error: null }));
 
     try {
-      const progressCallback = createTextProgressCallback(setTextModelState);
+      const progressCallback = createTextProgressCallback(setState);
+      
+      // Get model IDs based on type
+      const webgpuModelId = isQuality ? config.textGen.qualityModelId : config.textGen.fastModelId;
+      const cpuModelId = isQuality ? config.textGen.qualityModelIdCPU : config.textGen.fastModelIdCPU;
+      const modelName = isQuality ? 'Qwen2.5-0.5B' : 'SmolLM2-135M';
 
       // Try WebGPU first
       try {
-        textGenerator.current = await pipeline(
+        generatorRef.current = await pipeline(
           'text-generation',
-          config.textGen.modelIdWebGPU,
+          webgpuModelId,
           {
             device: 'webgpu',
             progress_callback: progressCallback,
           }
         );
-        setTextModelState(prev => ({
+        setState(prev => ({
           ...prev,
           status: ModelStatus.READY,
           loading: false,
           device: 'WebGPU',
+          modelName,
         }));
         return true;
       } catch (webgpuErr) {
         console.warn('WebGPU not available, falling back to CPU:', webgpuErr);
 
         // Fallback to CPU
-        textGenerator.current = await pipeline(
+        generatorRef.current = await pipeline(
           'text-generation',
-          config.textGen.modelIdCPU,
+          cpuModelId,
           {
             progress_callback: progressCallback,
           }
         );
-        setTextModelState(prev => ({
+        setState(prev => ({
           ...prev,
           status: ModelStatus.READY,
           loading: false,
           device: 'CPU',
+          modelName,
         }));
         return true;
       }
     } catch (err) {
       console.error('Failed to initialize text model:', err);
-      setTextModelState(prev => ({
+      setState(prev => ({
         ...prev,
         status: ModelStatus.ERROR,
         loading: false,
@@ -245,18 +290,38 @@ export const ModelProvider = ({ children }) => {
   }, [webgpuCapabilities]);
 
   /**
+   * Determine which model to use based on complexity
+   */
+  const getModelTypeForComplexity = useCallback((complexity = 0.5) => {
+    // Use quality model for high complexity content
+    return complexity >= config.textGen.complexityThreshold ? 'quality' : 'fast';
+  }, []);
+
+  /**
    * Generate text from a prompt
    */
   const generateText = useCallback(async (prompt, options = {}) => {
-    if (!textGenerator.current) {
-      const success = await initTextModel();
+    const { complexity, skipStatus, ...generationOptions } = options;
+    
+    // Determine which model to use based on complexity
+    const modelType = getModelTypeForComplexity(complexity);
+    const isQuality = modelType === 'quality';
+    const generatorRef = isQuality ? qualityTextGenerator : textGenerator;
+    const setState = isQuality ? setQualityTextModelState : setTextModelState;
+
+    // Initialize the appropriate model
+    if (!generatorRef.current) {
+      const success = await initTextModel(modelType);
       if (!success) {
         return null;
       }
     }
 
-    if (!options.skipStatus) {
-      setTextModelState(prev => ({ ...prev, loading: true, status: 'Generating Content...' }));
+    // Update active model tracking
+    setActiveTextModel(modelType);
+
+    if (!skipStatus) {
+      setState(prev => ({ ...prev, loading: true, status: 'Generating Content...' }));
     }
 
     try {
@@ -265,14 +330,14 @@ export const ModelProvider = ({ children }) => {
         { role: 'user', content: prompt },
       ];
 
-      const output = await textGenerator.current(messages, {
-        max_new_tokens: options.maxTokens || config.textGen.maxNewTokens,
-        temperature: options.temperature || config.textGen.temperature,
-        do_sample: options.doSample ?? config.textGen.doSample,
+      const output = await generatorRef.current(messages, {
+        max_new_tokens: generationOptions.maxTokens || config.textGen.maxNewTokens,
+        temperature: generationOptions.temperature || config.textGen.temperature,
+        do_sample: generationOptions.doSample ?? config.textGen.doSample,
       });
 
-      if (!options.skipStatus) {
-        setTextModelState(prev => ({ ...prev, loading: false, status: ModelStatus.READY }));
+      if (!skipStatus) {
+        setState(prev => ({ ...prev, loading: false, status: ModelStatus.READY }));
       }
 
       // Extract content from chat format
@@ -280,8 +345,8 @@ export const ModelProvider = ({ children }) => {
       return content || 'No content generated.';
     } catch (err) {
       console.error('Text generation error:', err);
-      if (!options.skipStatus) {
-        setTextModelState(prev => ({
+      if (!skipStatus) {
+        setState(prev => ({
           ...prev,
           loading: false,
           status: ModelStatus.ERROR,
@@ -290,12 +355,12 @@ export const ModelProvider = ({ children }) => {
       }
       return null;
     }
-  }, [initTextModel]);
+  }, [initTextModel, getModelTypeForComplexity]);
 
   /**
    * Generate a witty quip from the narrator
    */
-  const generateQuip = useCallback(async (content, subject) => {
+  const generateQuip = useCallback(async (content) => {
     try {
       const quip = await generateText(content, {
         systemPrompt: 'You are Logic the Lemur, a sassy, playful character who breaks the fourth wall.',
@@ -313,7 +378,25 @@ export const ModelProvider = ({ children }) => {
   /**
    * Generate image from a prompt
    */
-  const generateImageFromPrompt = useCallback(async (prompt) => {
+  const generateImageFromPrompt = useCallback(async (prompt, options = {}) => {
+    const { skipCache = false, useCache = true, negativePrompt } = options;
+
+    // Check cache first (unless disabled)
+    // Use negative prompt as part of cache key if provided
+    const cachePrompt = negativePrompt ? `${prompt}|${negativePrompt}` : prompt;
+    if (useCache && !skipCache) {
+      try {
+        const cachedBlob = await getCachedImage(cachePrompt);
+        if (cachedBlob) {
+          console.log('[ImageCache] Hit for prompt:', prompt.substring(0, 50));
+          const imageUrl = URL.createObjectURL(cachedBlob);
+          return { imageUrl, blob: cachedBlob, cached: true };
+        }
+      } catch (err) {
+        console.warn('[ImageCache] Failed to get cached image:', err);
+      }
+    }
+
     if (!imageModelLoaded.current) {
       const success = await initImageModel();
       if (!success) {
@@ -333,18 +416,36 @@ export const ModelProvider = ({ children }) => {
     setImageModelState(prev => ({ ...prev, loading: true, status: 'Generating Image...' }));
 
     try {
-      const result = await generateImage({
+      // Get generation settings based on device resources
+      const genSettings = getGenerationSettings();
+
+      const generateImageParams = {
         model: config.imageGen.modelId,
         prompt,
         seed: Math.floor(Math.random() * (config.imageGen.seedRange.max - config.imageGen.seedRange.min) + config.imageGen.seedRange.min),
-        width: config.imageGen.width,
-        height: config.imageGen.height,
-      });
+        width: genSettings.imageResolution?.width || config.imageGen.width,
+        height: genSettings.imageResolution?.height || config.imageGen.height,
+      };
+
+      // Add negative prompt if supported and provided
+      if (negativePrompt) {
+        generateImageParams.negativePrompt = negativePrompt;
+      }
+
+      const result = await generateImage(generateImageParams);
 
       if (result?.ok && result?.blob) {
+        // Cache the generated image (use combined key if negative prompt)
+        await cacheImage(cachePrompt, result.blob, {
+          width: result.blob.width,
+          height: result.blob.height,
+          seed: result.seed,
+          negativePrompt,
+        });
+
         const imageUrl = URL.createObjectURL(result.blob);
         setImageModelState(prev => ({ ...prev, loading: false, status: ModelStatus.READY }));
-        return { imageUrl, blob: result.blob };
+        return { imageUrl, blob: result.blob, cached: false };
       } else {
         throw new Error(result?.message || 'Generation failed');
       }
@@ -358,17 +459,21 @@ export const ModelProvider = ({ children }) => {
       }));
       return null;
     }
-  }, [initImageModel]);
+  }, [initImageModel, getGenerationSettings]);
 
   /**
-   * Unload text model to free memory
+   * Unload text models to free memory
    */
   const unloadTextModel = useCallback(async () => {
     if (textGenerator.current) {
-      // Transformers.js doesn't have a direct unload API for pipeline
       textGenerator.current = null;
       setTextModelState(createInitialModelState());
     }
+    if (qualityTextGenerator.current) {
+      qualityTextGenerator.current = null;
+      setQualityTextModelState(createInitialModelState());
+    }
+    setActiveTextModel('fast');
   }, []);
 
   /**
@@ -405,14 +510,98 @@ export const ModelProvider = ({ children }) => {
     return false;
   }, [initTextModel, initImageModel]);
 
+  /**
+   * Toggle Speed Mode on/off
+   */
+  const toggleSpeedMode = useCallback((enabled) => {
+    setSpeedMode(enabled);
+  }, []);
+
+  /**
+   * Get recommended generation settings based on device resources and speed mode
+   */
+  const getGenerationSettings = useCallback(() => {
+    if (!deviceResources) {
+      return {
+        mode: 'quality',
+        imageSteps: 4,
+        imageResolution: { width: 512, height: 512 },
+        skipImageGeneration: false,
+        description: 'Detecting resources...',
+      };
+    }
+
+    const recommended = getRecommendedSettings(deviceResources);
+
+    // If speed mode is manually enabled, use more aggressive optimization
+    if (speedMode && !deviceResources.isLowMemory) {
+      return {
+        mode: 'speed',
+        imageSteps: 2,
+        imageResolution: { width: 384, height: 384 },
+        skipImageGeneration: false,
+        description: 'Speed mode enabled',
+      };
+    }
+
+    return recommended;
+  }, [deviceResources, speedMode]);
+
+  /**
+   * Get image cache statistics
+   */
+  const fetchCacheStats = useCallback(async () => {
+    const { getCacheStats: getStats } = await import('../utils/imageCache');
+    return await getStats();
+  }, []);
+
+  /**
+   * Clear the image cache
+   */
+  const clearImageCache = useCallback(async () => {
+    const { clearImageCache: clearCache } = await import('../utils/imageCache');
+    return await clearCache();
+  }, []);
+
+  /**
+   * Save a book to IndexedDB
+   */
+  const saveBookToDB = useCallback(async (bookData) => {
+    return await saveBook(bookData);
+  }, []);
+
+  /**
+   * Get a saved book by ID
+   */
+  const getSavedBook = useCallback(async (bookId) => {
+    return await getBook(bookId);
+  }, []);
+
+  /**
+   * Get all saved books
+   */
+  const getSavedBooks = useCallback(async () => {
+    return await getAllBooks();
+  }, []);
+
+  /**
+   * Delete a saved book
+   */
+  const deleteSavedBook = useCallback(async (bookId) => {
+    return await deleteBook(bookId);
+  }, []);
+
   // Context value - memoized to prevent unnecessary re-renders
   const contextValue = useMemo(() => ({
     // Text generation
     generateText,
     generateQuip,
     textModel: textModelState,
+    qualityTextModel: qualityTextModelState,
+    activeTextModel,
     initTextModel,
     unloadTextModel,
+    getModelTypeForComplexity,
 
     // Image generation
     generateImage: generateImageFromPrompt,
@@ -424,6 +613,22 @@ export const ModelProvider = ({ children }) => {
     unloadAllModels,
     retryInit,
 
+    // Speed Mode and resource management
+    speedMode,
+    toggleSpeedMode,
+    getGenerationSettings,
+    deviceResources,
+
+    // Cache management
+    fetchCacheStats,
+    clearImageCache,
+
+    // Book management
+    saveBookToDB,
+    getSavedBook,
+    getSavedBooks,
+    deleteSavedBook,
+
     // Capabilities
     webgpuCapabilities,
     isWebGPUSupported: webgpuCapabilities?.webgpu && webgpuCapabilities?.shaderF16,
@@ -431,14 +636,27 @@ export const ModelProvider = ({ children }) => {
     generateText,
     generateQuip,
     textModelState,
+    qualityTextModelState,
+    activeTextModel,
     initTextModel,
     unloadTextModel,
+    getModelTypeForComplexity,
     generateImageFromPrompt,
     imageModelState,
     initImageModel,
     unloadImageModel,
     unloadAllModels,
     retryInit,
+    speedMode,
+    toggleSpeedMode,
+    getGenerationSettings,
+    deviceResources,
+    fetchCacheStats,
+    clearImageCache,
+    saveBookToDB,
+    getSavedBook,
+    getSavedBooks,
+    deleteSavedBook,
     webgpuCapabilities,
   ]);
 

@@ -18,6 +18,42 @@ const ControlPanel = ({ settings, setSettings, onGenerate, loading }) => {
     }));
   };
 
+  /**
+   * Handle keyboard input for sliders
+   */
+  const handleSliderKeyDown = (e, name, currentValue) => {
+    const step = 0.1;
+    let newValue = currentValue;
+
+    switch (e.key) {
+      case 'ArrowRight':
+      case 'ArrowUp':
+        e.preventDefault();
+        newValue = Math.min(1, currentValue + step);
+        break;
+      case 'ArrowLeft':
+      case 'ArrowDown':
+        e.preventDefault();
+        newValue = Math.max(0, currentValue - step);
+        break;
+      case 'Home':
+        e.preventDefault();
+        newValue = 0;
+        break;
+      case 'End':
+        e.preventDefault();
+        newValue = 1;
+        break;
+      default:
+        return;
+    }
+
+    setSettings(prev => ({
+      ...prev,
+      [name]: parseFloat(newValue.toFixed(1))
+    }));
+  };
+
   // Debounced live update for text regeneration (not images to save GPU)
   useEffect(() => {
     // Only trigger after initial generation and if subject exists
@@ -37,6 +73,7 @@ const ControlPanel = ({ settings, setSettings, onGenerate, loading }) => {
         clearTimeout(debounceRef.current);
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.tone, settings.style, settings.complexity, settings.level]);
 
   // Track when generation has occurred
@@ -89,7 +126,7 @@ const ControlPanel = ({ settings, setSettings, onGenerate, loading }) => {
 
       <div className="slider-group">
         <div className="slider-item">
-          <label>Tone: {settings.tone > 0.7 ? "Fun" : settings.tone < 0.3 ? "Academic" : "Balanced"}</label>
+          <label id="tone-label">Tone: {settings.tone > 0.7 ? "Fun" : settings.tone < 0.3 ? "Academic" : "Balanced"}</label>
           <input
             type="range"
             name="tone"
@@ -98,11 +135,14 @@ const ControlPanel = ({ settings, setSettings, onGenerate, loading }) => {
             step="0.1"
             value={settings.tone}
             onChange={handleChange}
+            onKeyDown={(e) => handleSliderKeyDown(e, 'tone', settings.tone)}
+            aria-labelledby="tone-label"
+            aria-valuetext={settings.tone > 0.7 ? "Fun" : settings.tone < 0.3 ? "Academic" : "Balanced"}
           />
         </div>
 
         <div className="slider-item">
-          <label>Visual Style: {settings.style > 0.7 ? "Realistic" : settings.style < 0.3 ? "Cartoonish" : "Digital Art"}</label>
+          <label id="style-label">Visual Style: {settings.style > 0.7 ? "Realistic" : settings.style < 0.3 ? "Cartoonish" : "Digital Art"}</label>
           <input
             type="range"
             name="style"
@@ -111,11 +151,14 @@ const ControlPanel = ({ settings, setSettings, onGenerate, loading }) => {
             step="0.1"
             value={settings.style}
             onChange={handleChange}
+            onKeyDown={(e) => handleSliderKeyDown(e, 'style', settings.style)}
+            aria-labelledby="style-label"
+            aria-valuetext={settings.style > 0.7 ? "Realistic" : settings.style < 0.3 ? "Cartoonish" : "Digital Art"}
           />
         </div>
 
         <div className="slider-item">
-          <label>Complexity: {settings.complexity > 0.7 ? "Deep" : settings.complexity < 0.3 ? "Simple" : "Medium"}</label>
+          <label id="complexity-label">Complexity: {settings.complexity > 0.7 ? "Deep" : settings.complexity < 0.3 ? "Simple" : "Medium"}</label>
           <input
             type="range"
             name="complexity"
@@ -124,6 +167,9 @@ const ControlPanel = ({ settings, setSettings, onGenerate, loading }) => {
             step="0.1"
             value={settings.complexity}
             onChange={handleChange}
+            onKeyDown={(e) => handleSliderKeyDown(e, 'complexity', settings.complexity)}
+            aria-labelledby="complexity-label"
+            aria-valuetext={settings.complexity > 0.7 ? "Deep" : settings.complexity < 0.3 ? "Simple" : "Medium"}
           />
         </div>
       </div>

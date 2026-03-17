@@ -14,19 +14,25 @@ const Narrator = ({ status, progress, quip, hasContent }) => {
     if (status.includes('Generating Image')) return "Painting a picture for you!";
     if (status === 'Model Ready') return "I'm ready to learn something new! What's on your mind?";
     if (status === 'Generation Complete') return "Wow! That was fascinating. Let's look at the book!";
-    
+
     // Priority 3: Default greeting
     return "Hi! I'm Logic the Lemur. Let's make a book together!";
   };
 
   const isShowingQuip = hasContent && quip;
+  const message = getMessage();
 
   return (
-    <div className={`narrator ${isShowingQuip ? 'showing-quip' : ''}`}>
-      <div className={`speech-bubble ${isShowingQuip ? 'quip-bubble' : ''}`}>
-        {getMessage()}
+    <div className={`narrator ${isShowingQuip ? 'showing-quip' : ''}`} role="complementary" aria-label="Narrator">
+      <div 
+        className={`speech-bubble ${isShowingQuip ? 'quip-bubble' : ''}`}
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {message}
       </div>
-      <div className="character">
+      <div className="character" aria-hidden="true">
         🐒
       </div>
     </div>

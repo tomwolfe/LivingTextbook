@@ -1,20 +1,22 @@
 /* ModelStatusDashboard Styles */
 .model-status-dashboard {
-  background: #ffffff;
+  background: var(--bg-secondary, #ffffff);
   border-radius: 0.75rem;
   padding: 1.25rem;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  border: 1px solid #e2e8f0;
+  box-shadow: var(--shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.1));
+  border: 1px solid var(--border-color, #e2e8f0);
   max-width: 320px;
+  transition: all 0.3s ease;
 }
 
 .dashboard-title {
   font-size: 0.875rem;
   font-weight: 700;
-  color: #1e293b;
+  color: var(--text-primary, #1e293b);
   margin: 0 0 1rem 0;
   padding-bottom: 0.75rem;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+  transition: all 0.3s ease;
 }
 
 .capability-section,
@@ -34,10 +36,11 @@
   gap: 0.5rem;
   font-size: 0.75rem;
   font-weight: 600;
-  color: #64748b;
+  color: var(--text-muted, #64748b);
   margin-bottom: 0.5rem;
   text-transform: uppercase;
   letter-spacing: 0.025em;
+  transition: color 0.3s ease;
 }
 
 .webgpu-status {
@@ -63,15 +66,17 @@
 .capability-details {
   margin-top: 0.5rem;
   padding: 0.5rem 0.75rem;
-  background: #f8fafc;
+  background: var(--bg-tertiary, #f8fafc);
   border-radius: 0.5rem;
+  transition: all 0.3s ease;
 }
 
 .capability-item {
   display: flex;
   justify-content: space-between;
   font-size: 0.75rem;
-  color: #64748b;
+  color: var(--text-secondary, #64748b);
+  transition: color 0.3s ease;
 }
 
 .capability-item .yes {
@@ -222,4 +227,120 @@
   50% {
     opacity: 0.5;
   }
+}
+
+/* Speed Mode Section */
+.speed-mode-section {
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background: var(--bg-tertiary, #f8fafc);
+  border-radius: 0.5rem;
+  border: 1px solid var(--border-color, #e2e8f0);
+  transition: all 0.3s ease;
+}
+
+.speed-mode-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.speed-mode-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.25rem;
+  border-radius: 0.25rem;
+  color: var(--text-secondary, #64748b);
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.speed-mode-toggle:hover {
+  background: var(--border-color, #e2e8f0);
+  color: var(--accent-secondary, #3b82f6);
+}
+
+.speed-mode-toggle.active {
+  color: var(--accent-success, #16a34a);
+}
+
+.speed-mode-toggle.active:hover {
+  background: rgba(22, 163, 74, 0.1);
+}
+
+.speed-mode-description {
+  font-size: 0.75rem;
+  color: #64748b;
+  margin-bottom: 0.375rem;
+}
+
+.speed-mode-reason {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.625rem;
+  color: #f59e0b;
+  background: #fffbeb;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+}
+
+/* Cache Section */
+.cache-section {
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background: var(--bg-primary, #f0f9ff);
+  border-radius: 0.5rem;
+  border: 1px solid var(--border-color, #e0f2fe);
+  transition: all 0.3s ease;
+}
+
+.cache-stats {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0.5rem;
+}
+
+.cache-count {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #0369a1;
+}
+
+.cache-clear-btn {
+  background: #0ea5e9;
+  color: white;
+  border: none;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.625rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.cache-clear-btn:hover {
+  background: #0284c7;
+}
+
+.cache-description {
+  font-size: 0.625rem;
+  color: #64748b;
+  margin-top: 0.375rem;
+}
+
+/* Active Model Badge */
+.active-model-badge {
+  font-size: 0.625rem;
+  font-weight: 600;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  background: #dbeafe;
+  color: #1e40af;
+  margin-left: auto;
 }
