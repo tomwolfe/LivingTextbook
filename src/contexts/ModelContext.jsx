@@ -459,7 +459,7 @@ export const ModelProvider = ({ children }) => {
       }));
       return null;
     }
-  }, [initImageModel, getGenerationSettings]);
+  }, [initImageModel]);
 
   /**
    * Unload text models to free memory
