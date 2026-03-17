@@ -362,6 +362,16 @@ const BookRenderer = ({ bookData, loading, currentPage, totalPages, onPageChange
     );
   }
 
+  // No book data available
+  if (!bookData) {
+    return (
+      <div className="book-empty">
+        <h2>No page selected</h2>
+        <p>Select a page from the outline or generate a new book.</p>
+      </div>
+    );
+  }
+
   return (
     <div 
       className="book-container"
@@ -369,7 +379,7 @@ const BookRenderer = ({ bookData, loading, currentPage, totalPages, onPageChange
       aria-label="Book reader"
       tabIndex={0}
     >
-      <div 
+      <div
         className={`book-page ${isFlipping ? 'flipping' : ''}`}
         role="article"
         aria-label={`Page ${currentPage + 1} of ${totalPages}`}
