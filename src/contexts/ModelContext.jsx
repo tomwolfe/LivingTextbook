@@ -170,17 +170,35 @@ export const ModelProvider = ({ children }) => {
       const tokenizerProvider = async () => {
         const tokenizer = await AutoTokenizer.from_pretrained(config.imageGen.tokenizerModel);
         tokenizer.pad_token_id = 0;
-        return async (text, opts) => {
-          const result = await tokenizer(text, {
-            padding: 'max_length',
+        return async (text) => {
+          // Tokenize the text
+          const tokens = await tokenizer.encode(text, {
             truncation: true,
             max_length: 77,
-            ...opts,
           });
-          // Ensure we return plain array, not tensor
-          return {
-            input_ids: Array.isArray(result.input_ids) ? result.input_ids : result.input_ids.tolist?.() || [...result.input_ids],
-          };
+          
+          // Get the token IDs array
+          let tokenIds = tokens;
+          if (typeof tokens === 'object' && tokens !== null) {
+            tokenIds = tokens.input_ids || tokens;
+          }
+          
+          // Convert to array if it's a tensor
+          if (!Array.isArray(tokenIds)) {
+            tokenIds = tokenIds.tolist?.() || [...tokenIds];
+          }
+          
+          // Pad to exactly 77 tokens
+          while (tokenIds.length < 77) {
+            tokenIds.push(0); // pad_token_id
+          }
+          
+          // Truncate if somehow longer than 77
+          if (tokenIds.length > 77) {
+            tokenIds = tokenIds.slice(0, 77);
+          }
+          
+          return { input_ids: tokenIds };
         };
       };
 
