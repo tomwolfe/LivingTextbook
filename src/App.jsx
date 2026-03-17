@@ -64,7 +64,7 @@ function AppContent() {
             settings={settings}
             setSettings={setSettings}
             onGenerate={handleGenerate}
-            loading={textLoading || imageLoading}
+            loading={textModel.loading || imageModel.loading}
           />
 
           <ErrorBoundary>
@@ -76,7 +76,7 @@ function AppContent() {
         </section>
       </main>
 
-      <Narrator status={overallStatus} progress={progress} />
+      <Narrator status={overallStatus} progress={textModel.progress || imageModel.progress} />
     </div>
   );
 }
