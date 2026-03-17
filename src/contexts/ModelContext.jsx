@@ -1,19 +1,13 @@
-import React, { createContext, useContext, useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { pipeline, env, AutoTokenizer } from '@huggingface/transformers';
-import { loadModel, generateImage, unloadModel, detectCapabilities } from 'web-txt2img';
+import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { config } from '../config';
 import { detectDeviceResources, getRecommendedSettings } from '../utils/resourceDetector';
-import { cacheImage, getCachedImage, saveBook, getBook, getAllBooks, deleteBook } from '../utils/imageCache';
-
-// Configure transformers.js environment
-env.allowLocalModels = config.transformers.allowLocalModels;
-env.useBrowserCache = config.transformers.useBrowserCache;
-env.logLevel = config.transformers.logLevel;
+import { saveBook, getBook, getAllBooks, deleteBook, getCacheStats, clearImageCache } from '../utils/imageCache';
+import { MainThreadRPC } from '../utils/workerRPC';
+import { assertStorageAvailability, MODEL_SIZES } from '../utils/storageQuota';
 
 /**
  * Model Status Enum
  */
-// eslint-disable-next-line react-refresh/only-export-components
 export const ModelStatus = {
   IDLE: 'Idle',
   LOADING: 'Loading',
@@ -25,7 +19,6 @@ export const ModelStatus = {
 /**
  * Model Type Enum
  */
-// eslint-disable-next-line react-refresh/only-export-components
 export const ModelType = {
   TEXT: 'text',
   IMAGE: 'image',
@@ -40,6 +33,7 @@ const createInitialModelState = () => ({
   progress: 0,
   error: null,
   device: null,
+  modelName: null,
 });
 
 /**
@@ -48,24 +42,20 @@ const createInitialModelState = () => ({
 const ModelContext = createContext(null);
 
 /**
- * Provider component that manages AI model lifecycle
+ * Provider component that manages AI model lifecycle via worker
  */
 export const ModelProvider = ({ children }) => {
   // Text generation model state (fast model - SmolLM2)
   const [textModelState, setTextModelState] = useState(createInitialModelState());
-  const textGenerator = useRef(null);
 
   // Quality text generation model state (Qwen2.5)
   const [qualityTextModelState, setQualityTextModelState] = useState(createInitialModelState());
-  const qualityTextGenerator = useRef(null);
 
   // Track which model is currently active
   const [activeTextModel, setActiveTextModel] = useState('fast'); // 'fast' or 'quality'
 
   // Image generation model state
   const [imageModelState, setImageModelState] = useState(createInitialModelState());
-  const imageModelLoaded = useRef(false);
-  const imageModelLoadPromise = useRef(null);
 
   // WebGPU capability state
   const [webgpuCapabilities, setWebgpuCapabilities] = useState(null);
@@ -74,12 +64,20 @@ export const ModelProvider = ({ children }) => {
   const [deviceResources, setDeviceResources] = useState(null);
   const [speedMode, setSpeedMode] = useState(false);
 
+  // Storage quota state
+  const [storageStatus, setStorageStatus] = useState(null);
+
+  // Worker and RPC
+  const workerRef = useRef(null);
+  const rpcRef = useRef(null);
+
   /**
    * Detect WebGPU capabilities and device resources on mount
    */
   useEffect(() => {
     const detectCaps = async () => {
       try {
+        const { detectCapabilities } = await import('web-txt2img');
         const caps = await detectCapabilities();
         setWebgpuCapabilities(caps);
       } catch (err) {
@@ -112,77 +110,187 @@ export const ModelProvider = ({ children }) => {
   }, []);
 
   /**
-   * Progress callback factory for text generation
+   * Check storage quota on mount
    */
-  const createTextProgressCallback = useCallback((setState) => (progress) => {
-    if (progress?.status === 'progress') {
-      setState(prev => ({
-        ...prev,
-        progress: parseFloat(progress.progress?.toFixed(2) || 0),
-      }));
-    }
+  useEffect(() => {
+    const checkStorage = async () => {
+      try {
+        const { getStorageStatus } = await import('../utils/storageQuota');
+        const status = await getStorageStatus();
+        setStorageStatus(status);
+      } catch (err) {
+        console.warn('Failed to check storage:', err);
+      }
+    };
+
+    checkStorage();
   }, []);
 
   /**
-   * Initialize a text generation model (fast or quality)
+   * Initialize worker and RPC
+   */
+  useEffect(() => {
+    // Create worker
+    workerRef.current = new Worker(
+      new URL('./workers/GenerationWorker.js', import.meta.url),
+      { type: 'module' }
+    );
+
+    // Initialize RPC
+    rpcRef.current = new MainThreadRPC(workerRef.current);
+
+    // Set up handler for worker-initiated events
+    rpcRef.current.setWorkerMessageHandler((data) => {
+      const { type, payload } = data;
+
+      switch (type) {
+        case 'MODEL_PROGRESS': {
+          const { modelType, progress, status } = payload || {};
+          if (modelType === 'fast' || modelType === 'quality') {
+            const setState = modelType === 'quality' ? setQualityTextModelState : setTextModelState;
+            setState(prev => ({
+              ...prev,
+              progress,
+              status: status || prev.status,
+              loading: progress < 100,
+            }));
+          } else if (modelType === 'image') {
+            setImageModelState(prev => ({
+              ...prev,
+              progress,
+              status: status || prev.status,
+              loading: progress < 100,
+            }));
+          }
+          break;
+        }
+
+        case 'MODEL_LOADED': {
+          const { modelType, device, modelName } = payload || {};
+          if (modelType === 'fast' || modelType === 'quality') {
+            const setState = modelType === 'quality' ? setQualityTextModelState : setTextModelState;
+            setState(prev => ({
+              ...prev,
+              status: ModelStatus.READY,
+              loading: false,
+              progress: 100,
+              device: device || 'WebGPU',
+              modelName: modelName || prev.modelName,
+            }));
+            if (modelType === 'fast' || modelType === 'quality') {
+              setActiveTextModel(modelType);
+            }
+          } else if (modelType === 'image') {
+            setImageModelState(prev => ({
+              ...prev,
+              status: ModelStatus.READY,
+              loading: false,
+              progress: 100,
+              device: device || 'WebGPU',
+            }));
+          }
+          break;
+        }
+
+        case 'MODEL_ERROR': {
+          const { modelType, error } = payload || {};
+          if (modelType === 'fast' || modelType === 'quality') {
+            const setState = modelType === 'quality' ? setQualityTextModelState : setTextModelState;
+            setState(prev => ({
+              ...prev,
+              status: ModelStatus.ERROR,
+              loading: false,
+              error: error || 'Model load failed',
+            }));
+          } else if (modelType === 'image') {
+            setImageModelState(prev => ({
+              ...prev,
+              status: ModelStatus.ERROR,
+              loading: false,
+              error: error || 'Model load failed',
+            }));
+          }
+          break;
+        }
+
+        case 'MODEL_UNLOADED': {
+          const { modelType } = payload || {};
+          if (modelType === 'fast' || modelType === 'quality') {
+            const setState = modelType === 'quality' ? setQualityTextModelState : setTextModelState;
+            setState(createInitialModelState());
+          } else if (modelType === 'image') {
+            setImageModelState(createInitialModelState());
+          }
+          break;
+        }
+
+        case 'GENERATION_PROGRESS': {
+          const { stage, status } = payload || {};
+          // Could be used for UI feedback during generation
+          console.log(`Generation progress: ${stage} - ${status}`);
+          break;
+        }
+
+        case 'PAGE_START':
+        case 'PAGE_COMPLETE':
+        case 'PAGE_ERROR':
+        case 'QUEUE_COMPLETE':
+        case 'GENERATION_CANCELLED': {
+          // Forward these events via custom event for App to listen to
+          window.dispatchEvent(new CustomEvent('worker-generation-event', { detail: data }));
+          break;
+        }
+
+        default:
+          break;
+      }
+    });
+
+    // Cleanup on unmount
+    return () => {
+      if (rpcRef.current) {
+        rpcRef.current.cleanup();
+      }
+      if (workerRef.current) {
+        workerRef.current.terminate();
+      }
+    };
+  }, []);
+
+  /**
+   * Initialize text model via worker
    */
   const initTextModel = useCallback(async (modelType = 'fast') => {
+    if (!rpcRef.current) {
+      throw new Error('Worker not initialized');
+    }
+
     const isQuality = modelType === 'quality';
-    const generatorRef = isQuality ? qualityTextGenerator : textGenerator;
     const setState = isQuality ? setQualityTextModelState : setTextModelState;
 
-    if (generatorRef.current) {
-      return true;
+    // Check storage quota before downloading
+    try {
+      const requirement = modelType === 'quality' ? 'quality' : 'fast';
+      await assertStorageAvailability(requirement);
+    } catch (err) {
+      console.error('Storage check failed:', err);
+      setState(prev => ({
+        ...prev,
+        status: ModelStatus.ERROR,
+        loading: false,
+        error: `Insufficient storage: ${err.message}`,
+      }));
+      return false;
     }
 
     setState(prev => ({ ...prev, status: ModelStatus.LOADING, loading: true, error: null }));
 
     try {
-      const progressCallback = createTextProgressCallback(setState);
-      
-      // Get model IDs based on type
-      const webgpuModelId = isQuality ? config.textGen.qualityModelId : config.textGen.fastModelId;
-      const cpuModelId = isQuality ? config.textGen.qualityModelIdCPU : config.textGen.fastModelIdCPU;
-      const modelName = isQuality ? 'Qwen2.5-0.5B' : 'SmolLM2-135M';
+      const result = await rpcRef.current.send('INIT_MODELS', {
+        modelTypes: [modelType],
+      });
 
-      // Try WebGPU first
-      try {
-        generatorRef.current = await pipeline(
-          'text-generation',
-          webgpuModelId,
-          {
-            device: 'webgpu',
-            progress_callback: progressCallback,
-          }
-        );
-        setState(prev => ({
-          ...prev,
-          status: ModelStatus.READY,
-          loading: false,
-          device: 'WebGPU',
-          modelName,
-        }));
-        return true;
-      } catch (webgpuErr) {
-        console.warn('WebGPU not available, falling back to CPU:', webgpuErr);
-
-        // Fallback to CPU
-        generatorRef.current = await pipeline(
-          'text-generation',
-          cpuModelId,
-          {
-            progress_callback: progressCallback,
-          }
-        );
-        setState(prev => ({
-          ...prev,
-          status: ModelStatus.READY,
-          loading: false,
-          device: 'CPU',
-          modelName,
-        }));
-        return true;
-      }
+      return result[modelType]?.success || false;
     } catch (err) {
       console.error('Failed to initialize text model:', err);
       setState(prev => ({
@@ -193,90 +301,37 @@ export const ModelProvider = ({ children }) => {
       }));
       return false;
     }
-  }, [createTextProgressCallback]);
+  }, []);
 
   /**
-   * Initialize image generation model
+   * Initialize image model via worker
    */
   const initImageModel = useCallback(async () => {
-    if (imageModelLoaded.current) {
-      return true;
+    if (!rpcRef.current) {
+      throw new Error('Worker not initialized');
+    }
+
+    // Check storage quota before downloading
+    try {
+      await assertStorageAvailability('image');
+    } catch (err) {
+      console.error('Storage check failed:', err);
+      setImageModelState(prev => ({
+        ...prev,
+        status: ModelStatus.ERROR,
+        loading: false,
+        error: `Insufficient storage: ${err.message}`,
+      }));
+      return false;
     }
 
     setImageModelState(prev => ({ ...prev, status: ModelStatus.LOADING, loading: true, error: null }));
 
     try {
-      // Check WebGPU capabilities
-      if (!webgpuCapabilities?.webgpu || !webgpuCapabilities?.shaderF16) {
-        throw new Error('WebGPU with shader_f16 support is required for image generation');
-      }
-
-      // Create tokenizer provider
-      const tokenizerProvider = async () => {
-        const tokenizer = await AutoTokenizer.from_pretrained(config.imageGen.tokenizerModel);
-        tokenizer.pad_token_id = 0;
-        return async (text) => {
-          // Tokenize the text
-          const tokens = await tokenizer.encode(text, {
-            truncation: true,
-            max_length: 77,
-          });
-          
-          // Get the token IDs array
-          let tokenIds = tokens;
-          if (typeof tokens === 'object' && tokens !== null) {
-            tokenIds = tokens.input_ids || tokens;
-          }
-          
-          // Convert to array if it's a tensor
-          if (!Array.isArray(tokenIds)) {
-            tokenIds = tokenIds.tolist?.() || [...tokenIds];
-          }
-          
-          // Pad to exactly 77 tokens
-          while (tokenIds.length < 77) {
-            tokenIds.push(0); // pad_token_id
-          }
-          
-          // Truncate if somehow longer than 77
-          if (tokenIds.length > 77) {
-            tokenIds = tokenIds.slice(0, 77);
-          }
-          
-          return { input_ids: tokenIds };
-        };
-      };
-
-      // Load model
-      imageModelLoadPromise.current = loadModel(
-        config.imageGen.modelId,
-        {
-          backendPreference: ['webgpu'],
-          tokenizerProvider,
-        },
-        (progress) => {
-          const pct = progress.pct != null ? Math.round(progress.pct) : null;
-          setImageModelState(prev => ({
-            ...prev,
-            progress: pct != null ? pct : prev.progress,
-          }));
-        }
-      );
-
-      const loadResult = await imageModelLoadPromise.current;
-
-      if (!loadResult?.ok) {
-        throw new Error(loadResult?.message || 'Model load failed');
-      }
-
-      imageModelLoaded.current = true;
-      setImageModelState(prev => ({
-        ...prev,
-        status: ModelStatus.READY,
-        loading: false,
-        device: 'WebGPU',
-      }));
-      return true;
+      const result = await rpcRef.current.send('INIT_MODELS', {
+        modelTypes: ['image'],
+      });
+      return result.image?.success || false;
     } catch (err) {
       console.error('Failed to initialize image model:', err);
       setImageModelState(prev => ({
@@ -287,62 +342,38 @@ export const ModelProvider = ({ children }) => {
       }));
       return false;
     }
-  }, [webgpuCapabilities]);
-
-  /**
-   * Determine which model to use based on complexity
-   */
-  const getModelTypeForComplexity = useCallback((complexity = 0.5) => {
-    // Use quality model for high complexity content
-    return complexity >= config.textGen.complexityThreshold ? 'quality' : 'fast';
   }, []);
 
   /**
-   * Generate text from a prompt
+   * Generate text from a prompt via worker
    */
   const generateText = useCallback(async (prompt, options = {}) => {
-    const { complexity, skipStatus, ...generationOptions } = options;
-    
-    // Determine which model to use based on complexity
-    const modelType = getModelTypeForComplexity(complexity);
-    const isQuality = modelType === 'quality';
-    const generatorRef = isQuality ? qualityTextGenerator : textGenerator;
-    const setState = isQuality ? setQualityTextModelState : setTextModelState;
-
-    // Initialize the appropriate model
-    if (!generatorRef.current) {
-      const success = await initTextModel(modelType);
-      if (!success) {
-        return null;
-      }
+    if (!rpcRef.current) {
+      throw new Error('Worker not initialized');
     }
 
-    // Update active model tracking
-    setActiveTextModel(modelType);
+    const { complexity, skipStatus, ...generationOptions } = options;
+    const isQuality = complexity >= config.textGen.complexityThreshold;
+    const setState = isQuality ? setQualityTextModelState : setTextModelState;
 
     if (!skipStatus) {
       setState(prev => ({ ...prev, loading: true, status: 'Generating Content...' }));
     }
 
     try {
-      const messages = [
-        { role: 'system', content: options.systemPrompt || 'You are a helpful educational assistant.' },
-        { role: 'user', content: prompt },
-      ];
-
-      const output = await generatorRef.current(messages, {
-        max_new_tokens: generationOptions.maxTokens || config.textGen.maxNewTokens,
-        temperature: generationOptions.temperature || config.textGen.temperature,
-        do_sample: generationOptions.doSample ?? config.textGen.doSample,
+      const result = await rpcRef.current.send('GENERATE_TEXT', {
+        prompt,
+        options: {
+          complexity,
+          ...generationOptions,
+        },
       });
 
       if (!skipStatus) {
         setState(prev => ({ ...prev, loading: false, status: ModelStatus.READY }));
       }
 
-      // Extract content from chat format
-      const content = output[0]?.generated_text?.[output[0].generated_text.length - 1]?.content;
-      return content || 'No content generated.';
+      return result;
     } catch (err) {
       console.error('Text generation error:', err);
       if (!skipStatus) {
@@ -355,10 +386,10 @@ export const ModelProvider = ({ children }) => {
       }
       return null;
     }
-  }, [initTextModel, getModelTypeForComplexity]);
+  }, []);
 
   /**
-   * Generate a witty quip from the narrator
+   * Generate a witty quip via worker
    */
   const generateQuip = useCallback(async (content) => {
     try {
@@ -376,13 +407,16 @@ export const ModelProvider = ({ children }) => {
   }, [generateText]);
 
   /**
-   * Generate image from a prompt
+   * Generate image from a prompt via worker
    */
   const generateImageFromPrompt = useCallback(async (prompt, options = {}) => {
+    if (!rpcRef.current) {
+      throw new Error('Worker not initialized');
+    }
+
     const { skipCache = false, useCache = true, negativePrompt } = options;
 
     // Check cache first (unless disabled)
-    // Use negative prompt as part of cache key if provided
     const cachePrompt = negativePrompt ? `${prompt}|${negativePrompt}` : prompt;
     if (useCache && !skipCache) {
       try {
@@ -397,57 +431,19 @@ export const ModelProvider = ({ children }) => {
       }
     }
 
-    if (!imageModelLoaded.current) {
-      const success = await initImageModel();
-      if (!success) {
-        return null;
-      }
-    }
-
-    // Wait for any ongoing load
-    if (imageModelLoadPromise.current) {
-      await imageModelLoadPromise.current;
-    }
-
-    if (!imageModelLoaded.current) {
-      return null;
-    }
-
     setImageModelState(prev => ({ ...prev, loading: true, status: 'Generating Image...' }));
 
     try {
-      // Get generation settings based on device resources
-      const genSettings = getGenerationSettings();
-
-      const generateImageParams = {
-        model: config.imageGen.modelId,
+      const result = await rpcRef.current.send('GENERATE_IMAGE', {
         prompt,
-        seed: Math.floor(Math.random() * (config.imageGen.seedRange.max - config.imageGen.seedRange.min) + config.imageGen.seedRange.min),
-        width: genSettings.imageResolution?.width || config.imageGen.width,
-        height: genSettings.imageResolution?.height || config.imageGen.height,
-      };
+        options: { negativePrompt, useCache: false }, // Cache already checked above
+      });
 
-      // Add negative prompt if supported and provided
-      if (negativePrompt) {
-        generateImageParams.negativePrompt = negativePrompt;
-      }
-
-      const result = await generateImage(generateImageParams);
-
-      if (result?.ok && result?.blob) {
-        // Cache the generated image (use combined key if negative prompt)
-        await cacheImage(cachePrompt, result.blob, {
-          width: result.blob.width,
-          height: result.blob.height,
-          seed: result.seed,
-          negativePrompt,
-        });
-
-        const imageUrl = URL.createObjectURL(result.blob);
+      if (result?.imageUrl) {
         setImageModelState(prev => ({ ...prev, loading: false, status: ModelStatus.READY }));
-        return { imageUrl, blob: result.blob, cached: false };
+        return result;
       } else {
-        throw new Error(result?.message || 'Generation failed');
+        throw new Error('Image generation failed');
       }
     } catch (err) {
       console.error('Image generation error:', err);
@@ -459,42 +455,150 @@ export const ModelProvider = ({ children }) => {
       }));
       return null;
     }
-  }, [initImageModel]);
+  }, []);
 
   /**
-   * Unload text models to free memory
+   * Generate outline via worker
+   */
+  const generateOutline = useCallback(async (subject, settings, numPages) => {
+    if (!rpcRef.current) {
+      throw new Error('Worker not initialized');
+    }
+
+    try {
+      const result = await rpcRef.current.send('GENERATE_OUTLINE', {
+        subject,
+        settings,
+        numPages,
+      });
+      return result;
+    } catch (err) {
+      console.error('Outline generation error:', err);
+      throw err;
+    }
+  }, []);
+
+  /**
+   * Start book generation via worker
+   */
+  const startBookGeneration = useCallback(async (settings, outline, numPages) => {
+    if (!rpcRef.current) {
+      throw new Error('Worker not initialized');
+    }
+
+    try {
+      const result = await rpcRef.current.send('START_GENERATION', {
+        settings,
+        outline,
+        numPages,
+      });
+      return result;
+    } catch (err) {
+      console.error('Failed to start book generation:', err);
+      throw err;
+    }
+  }, []);
+
+  /**
+   * Resume book generation via worker
+   */
+  const resumeBookGeneration = useCallback(async () => {
+    if (!rpcRef.current) {
+      throw new Error('Worker not initialized');
+    }
+
+    try {
+      await rpcRef.current.send('RESUME_GENERATION');
+    } catch (err) {
+      console.error('Failed to resume generation:', err);
+      throw err;
+    }
+  }, []);
+
+  /**
+   * Cancel book generation via worker
+   */
+  const cancelBookGeneration = useCallback(async () => {
+    if (!rpcRef.current) {
+      throw new Error('Worker not initialized');
+    }
+
+    try {
+      await rpcRef.current.send('CANCEL_GENERATION');
+    } catch (err) {
+      console.error('Failed to cancel generation:', err);
+      throw err;
+    }
+  }, []);
+
+  /**
+   * Unload text models via worker
    */
   const unloadTextModel = useCallback(async () => {
-    if (textGenerator.current) {
-      textGenerator.current = null;
+    if (!rpcRef.current) return;
+
+    try {
+      await rpcRef.current.send('UNLOAD_MODELS', {
+        modelTypes: ['fast', 'quality'],
+      });
       setTextModelState(createInitialModelState());
-    }
-    if (qualityTextGenerator.current) {
-      qualityTextGenerator.current = null;
       setQualityTextModelState(createInitialModelState());
+      setActiveTextModel('fast');
+    } catch (err) {
+      console.error('Failed to unload text models:', err);
     }
-    setActiveTextModel('fast');
   }, []);
 
   /**
-   * Unload image model to free memory
+   * Unload image model via worker
    */
   const unloadImageModel = useCallback(async () => {
-    if (imageModelLoaded.current) {
-      await unloadModel(config.imageGen.modelId);
-      imageModelLoaded.current = false;
-      imageModelLoadPromise.current = null;
+    if (!rpcRef.current) return;
+
+    try {
+      await rpcRef.current.send('UNLOAD_MODELS', {
+        modelTypes: ['image'],
+      });
       setImageModelState(createInitialModelState());
+    } catch (err) {
+      console.error('Failed to unload image model:', err);
     }
   }, []);
 
   /**
-   * Unload all models
+   * Unload all models via worker
    */
   const unloadAllModels = useCallback(async () => {
-    await unloadTextModel();
-    await unloadImageModel();
-  }, [unloadTextModel, unloadImageModel]);
+    if (!rpcRef.current) return;
+
+    try {
+      await rpcRef.current.send('UNLOAD_MODELS', {
+        modelTypes: ['fast', 'quality', 'image'],
+      });
+      setTextModelState(createInitialModelState());
+      setQualityTextModelState(createInitialModelState());
+      setImageModelState(createInitialModelState());
+      setActiveTextModel('fast');
+    } catch (err) {
+      console.error('Failed to unload models:', err);
+    }
+  }, []);
+
+  /**
+   * Get model status via worker
+   */
+  const getModelStatus = useCallback(async () => {
+    if (!rpcRef.current) {
+      return null;
+    }
+
+    try {
+      return await rpcRef.current.send('GET_MODEL_STATUS');
+    } catch (err) {
+      console.error('Failed to get model status:', err);
+      return null;
+    }
+  }, []);
 
   /**
    * Retry model initialization after error
@@ -547,61 +651,17 @@ export const ModelProvider = ({ children }) => {
     return recommended;
   }, [deviceResources, speedMode]);
 
-  /**
-   * Get image cache statistics
-   */
-  const fetchCacheStats = useCallback(async () => {
-    const { getCacheStats: getStats } = await import('../utils/imageCache');
-    return await getStats();
-  }, []);
-
-  /**
-   * Clear the image cache
-   */
-  const clearImageCache = useCallback(async () => {
-    const { clearImageCache: clearCache } = await import('../utils/imageCache');
-    return await clearCache();
-  }, []);
-
-  /**
-   * Save a book to IndexedDB
-   */
-  const saveBookToDB = useCallback(async (bookData) => {
-    return await saveBook(bookData);
-  }, []);
-
-  /**
-   * Get a saved book by ID
-   */
-  const getSavedBook = useCallback(async (bookId) => {
-    return await getBook(bookId);
-  }, []);
-
-  /**
-   * Get all saved books
-   */
-  const getSavedBooks = useCallback(async () => {
-    return await getAllBooks();
-  }, []);
-
-  /**
-   * Delete a saved book
-   */
-  const deleteSavedBook = useCallback(async (bookId) => {
-    return await deleteBook(bookId);
-  }, []);
-
   // Context value - memoized to prevent unnecessary re-renders
   const contextValue = useMemo(() => ({
     // Text generation
     generateText,
     generateQuip,
+    generateOutline,
     textModel: textModelState,
     qualityTextModel: qualityTextModelState,
     activeTextModel,
     initTextModel,
     unloadTextModel,
-    getModelTypeForComplexity,
 
     // Image generation
     generateImage: generateImageFromPrompt,
@@ -609,9 +669,15 @@ export const ModelProvider = ({ children }) => {
     initImageModel,
     unloadImageModel,
 
+    // Book generation orchestration
+    startBookGeneration,
+    resumeBookGeneration,
+    cancelBookGeneration,
+
     // General
     unloadAllModels,
     retryInit,
+    getModelStatus,
 
     // Speed Mode and resource management
     speedMode,
@@ -620,14 +686,17 @@ export const ModelProvider = ({ children }) => {
     deviceResources,
 
     // Cache management
-    fetchCacheStats,
+    fetchCacheStats: getCacheStats,
     clearImageCache,
 
+    // Storage management
+    storageStatus,
+
     // Book management
-    saveBookToDB,
-    getSavedBook,
-    getSavedBooks,
-    deleteSavedBook,
+    saveBookToDB: saveBook,
+    getSavedBook: getBook,
+    getSavedBooks: getAllBooks,
+    deleteSavedBook: deleteBook,
 
     // Capabilities
     webgpuCapabilities,
@@ -635,28 +704,28 @@ export const ModelProvider = ({ children }) => {
   }), [
     generateText,
     generateQuip,
+    generateOutline,
     textModelState,
     qualityTextModelState,
     activeTextModel,
     initTextModel,
     unloadTextModel,
-    getModelTypeForComplexity,
     generateImageFromPrompt,
     imageModelState,
     initImageModel,
     unloadImageModel,
+    startBookGeneration,
+    resumeBookGeneration,
+    cancelBookGeneration,
     unloadAllModels,
     retryInit,
+    getModelStatus,
     speedMode,
     toggleSpeedMode,
     getGenerationSettings,
     deviceResources,
-    fetchCacheStats,
     clearImageCache,
-    saveBookToDB,
-    getSavedBook,
-    getSavedBooks,
-    deleteSavedBook,
+    storageStatus,
     webgpuCapabilities,
   ]);
 
@@ -666,7 +735,6 @@ export const ModelProvider = ({ children }) => {
 /**
  * Hook to access model context
  */
-// eslint-disable-next-line react-refresh/only-export-components
 export const useModel = () => {
   const context = useContext(ModelContext);
   if (!context) {

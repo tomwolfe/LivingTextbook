@@ -6,11 +6,53 @@ import Narrator from './components/Narrator';
 import ModelStatusDashboard from './components/ModelStatusDashboard';
 import ErrorBoundary from './components/ErrorBoundary';
 import BookLibrary from './components/BookLibrary';
-import { generatePrompt, generateOutlinePrompt, generateQuipPrompt } from './utils/promptEngine';
+import { generatePrompt } from './utils/promptEngine';
 import { config } from './config';
 import './App.css';
 
 const NUM_PAGES = 3;
+
+/**
+ * Parse outline from LLM response with robust JSON extraction
+ */
+function parseOutline(response) {
+  try {
+    if (!response) return null;
+
+    // Try to extract JSON from the response
+    // First, strip markdown code blocks if present
+    let cleanResponse = response;
+    const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) {
+      cleanResponse = codeBlockMatch[1];
+    }
+
+    // Try to find JSON array in the response
+    const jsonMatch = cleanResponse.match(/\[.*\]/s);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(parsed) && parsed.length === NUM_PAGES) {
+        // Validate schema
+        const isValid = parsed.every(item => 
+          item && typeof item === 'object' && 
+          typeof item.title === 'string' && 
+          typeof item.focus === 'string'
+        );
+        if (isValid) {
+          return parsed;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to parse outline, using fallback:', err);
+  }
+
+  // Fallback outline
+  return Array.from({ length: NUM_PAGES }, (_, i) => ({
+    title: `Page ${i + 1}`,
+    focus: `Continue explaining the topic`
+  }));
+}
 
 /**
  * Main app content wrapped in ModelProvider
@@ -27,6 +69,7 @@ function AppContent() {
     const saved = localStorage.getItem('living-textbook-dark-mode');
     return saved ? JSON.parse(saved) : false;
   });
+  
   const {
     generateText,
     generateQuip,
@@ -34,11 +77,12 @@ function AppContent() {
     generateImage,
     imageModel,
     saveBookToDB,
+    generateOutline,
+    startBookGeneration,
+    resumeBookGeneration,
   } = useModel();
 
-  const generationWorkerRef = useRef(null);
   const pendingGenerationsRef = useRef(new Set());
-  const handleModelRequestRef = useRef(null);
 
   /**
    * Persist dark mode preference
@@ -60,14 +104,14 @@ function AppContent() {
    */
   useEffect(() => {
     const handleImageUpdate = (event) => {
-      const { currentPage, newImage } = event.detail;
-      
+      const { currentPage: pageNum, newImage } = event.detail;
+
       setBookData(prev => {
         if (!prev) return prev;
         const newPages = [...(prev.pages || [])];
-        if (newPages[currentPage]) {
-          newPages[currentPage] = {
-            ...newPages[currentPage],
+        if (newPages[pageNum]) {
+          newPages[pageNum] = {
+            ...newPages[pageNum],
             image: newImage,
           };
         }
@@ -82,107 +126,21 @@ function AppContent() {
   }, []);
 
   /**
-   * Handle model operation requests from worker
-   */
-  const handleModelRequest = useCallback(async (requestType, payload) => {
-    if (!generationWorkerRef.current) return;
-
-    let result;
-
-    try {
-      switch (requestType) {
-        case 'GENERATE_PROMPT': {
-          const { textPrompt, imagePrompt } = generatePrompt(
-            payload.subject,
-            payload.settings,
-            payload.pageNum,
-            payload.totalPages,
-            payload.previousPageContent
-          );
-          result = { textPrompt, imagePrompt };
-          break;
-        }
-
-        case 'GENERATE_TEXT': {
-          // Pass complexity for dynamic model selection
-          result = await generateText(payload.prompt, {
-            complexity: payload.settings?.complexity,
-          });
-          break;
-        }
-
-        case 'GENERATE_IMAGE': {
-          // Handle both string prompts and structured prompts with negative
-          const promptData = typeof payload.prompt === 'string' 
-            ? payload.prompt 
-            : payload.prompt.positive;
-          const negativePrompt = typeof payload.prompt === 'object' 
-            ? payload.prompt.negative 
-            : undefined;
-          
-          result = await generateImage(promptData, { negativePrompt });
-          break;
-        }
-
-        case 'GENERATE_QUIP_PROMPT': {
-          const quipPrompt = generateQuipPrompt(payload.content, payload.subject);
-          result = { quipPrompt };
-          break;
-        }
-
-        case 'GENERATE_QUIP': {
-          result = await generateQuip(payload.prompt);
-          break;
-        }
-
-        default:
-          console.warn('Unknown model request type:', requestType);
-          return;
-      }
-
-      // Send result back to worker
-      generationWorkerRef.current.postMessage({
-        type: 'MODEL_RESPONSE',
-        requestType,
-        result,
-      });
-    } catch (err) {
-      console.error(`Model request ${requestType} failed:`, err);
-      generationWorkerRef.current.postMessage({
-        type: 'MODEL_RESPONSE',
-        requestType,
-        result: null,
-        error: err.message,
-      });
-    }
-  }, [generateText, generateImage, generateQuip]);
-
-  // Store handleModelRequest in ref for use in useEffect
-  useEffect(() => {
-    handleModelRequestRef.current = handleModelRequest;
-  }, [handleModelRequest]);
-
-  /**
-   * Initialize the generation worker
+   * Handle worker generation events
    */
   useEffect(() => {
-    // Create worker from bundled file
-    generationWorkerRef.current = new Worker(
-      new URL('./workers/GenerationWorker.js', import.meta.url),
-      { type: 'module' }
-    );
-
-    // Handle worker messages
-    generationWorkerRef.current.onmessage = (event) => {
-      const { type, pageNum, pageData, error, requestType, payload } = event.data;
+    const handleWorkerEvent = (event) => {
+      const { type, payload } = event.detail || {};
 
       switch (type) {
         case 'PAGE_START': {
+          const { pageNum } = payload || {};
           setGeneratingPages(prev => [...prev, pageNum]);
           break;
         }
 
         case 'PAGE_COMPLETE': {
+          const { pageNum, pageData } = payload || {};
           setBookData(prev => {
             const newPages = [...(prev?.pages || [])];
             newPages[pageNum] = pageData;
@@ -193,7 +151,8 @@ function AppContent() {
         }
 
         case 'PAGE_ERROR': {
-          console.error(`Worker: Page ${pageNum} error:`, error);
+          const { pageNum, error } = payload || {};
+          console.error(`Page ${pageNum} error:`, error);
           setGeneratingPages(prev => prev.filter(p => p !== pageNum));
           break;
         }
@@ -201,59 +160,22 @@ function AppContent() {
         case 'QUEUE_COMPLETE':
         case 'GENERATION_CANCELLED':
           pendingGenerationsRef.current.clear();
+          setGeneratingPages([]);
           break;
-
-        // Handle model operation requests from worker
-        case 'MODEL_REQUEST': {
-          handleModelRequestRef.current?.(requestType, payload);
-          break;
-        }
 
         default:
           break;
       }
     };
 
-    generationWorkerRef.current.onerror = (err) => {
-      console.error('Worker error:', err);
-      pendingGenerationsRef.current.clear();
-    };
-
+    window.addEventListener('worker-generation-event', handleWorkerEvent);
     return () => {
-      // Cleanup worker on unmount
-      if (generationWorkerRef.current) {
-        generationWorkerRef.current.terminate();
-        generationWorkerRef.current = null;
-      }
+      window.removeEventListener('worker-generation-event', handleWorkerEvent);
     };
-  }, []);
-
-  /**
-   * Parse outline from LLM response
-   */
-  const parseOutline = useCallback((response) => {
-    try {
-      // Try to extract JSON from the response
-      const jsonMatch = response.match(/\[.*\]/s);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (Array.isArray(parsed) && parsed.length === NUM_PAGES) {
-          return parsed;
-        }
-      }
-    } catch (err) {
-      console.warn('Failed to parse outline, using fallback:', err);
-    }
-
-    // Fallback outline
-    return Array.from({ length: NUM_PAGES }, (_, i) => ({
-      title: `Page ${i + 1}`,
-      focus: `Continue explaining the topic`
-    }));
   }, []);
 
   const handleGenerate = useCallback(async () => {
-    if (!settings.subject || !generationWorkerRef.current) return;
+    if (!settings.subject) return;
 
     // Reset state
     setBookData(null);
@@ -262,9 +184,8 @@ function AppContent() {
     pendingGenerationsRef.current.clear();
 
     try {
-      // Step 1: Generate outline (still on main thread for UI feedback)
-      const outlinePrompt = generateOutlinePrompt(settings.subject, settings, NUM_PAGES);
-      const outlineResponse = await generateText(outlinePrompt);
+      // Step 1: Generate outline
+      const outlineResponse = await generateOutline(settings.subject, settings, NUM_PAGES);
       const parsedOutline = parseOutline(outlineResponse);
       setOutline(parsedOutline);
 
@@ -275,30 +196,19 @@ function AppContent() {
         settings: { ...settings }
       });
 
-      // Step 3: Send generation request to worker
-      generationWorkerRef.current.postMessage({
-        type: 'START_GENERATION',
-        payload: {
-          settings,
-          outline: parsedOutline,
-          numPages: NUM_PAGES,
-        },
-      });
+      // Step 3: Start generation in worker
+      await startBookGeneration(settings, parsedOutline, NUM_PAGES);
 
-      // Step 4: Worker processes first page immediately, then resumes after delay
-      setTimeout(() => {
-        if (generationWorkerRef.current) {
-          generationWorkerRef.current.postMessage({
-            type: 'RESUME_GENERATION',
-          });
-        }
+      // Step 4: Resume generation after delay
+      setTimeout(async () => {
+        await resumeBookGeneration();
       }, 500);
 
     } catch (err) {
       console.error('Generation failed:', err);
       setBookData(null);
     }
-  }, [settings, generateText, parseOutline]);
+  }, [settings, generateOutline, startBookGeneration, resumeBookGeneration]);
 
   const handlePageChange = useCallback((newPage) => {
     if (newPage >= 0 && newPage < NUM_PAGES) {
