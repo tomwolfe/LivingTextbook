@@ -34,7 +34,7 @@
     },
 
     /* Type definitions */
-    "types": ["node", "vite/client"]
+    "types": ["node", "vite/client", "vitest/globals", "@webgpu/types"]
   },
   "include": ["src"],
   "references": [{ "path": "./tsconfig.node.json" }]

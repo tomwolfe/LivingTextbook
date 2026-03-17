@@ -153,7 +153,7 @@ export class MainThreadRPC {
    * Clean up - reject all pending requests
    */
   cleanup() {
-    for (const [id, pending] of this.pendingRequests.entries()) {
+    for (const [, pending] of this.pendingRequests.entries()) {
       clearTimeout(pending.timeoutId);
       pending.reject(new Error('Worker terminated'));
     }
@@ -172,12 +172,10 @@ type HandlerFunction<T = unknown> = (payload: T) => Promise<unknown>;
  */
 export class WorkerRPC {
   private handlers: Map<string, HandlerFunction>;
-  private defaultTimeout: number;
 
   constructor() {
     this.handlers = new Map();
-    this.defaultTimeout = 120000;
-    
+
     // Bind message handler
     self.addEventListener('message', this.handleMessage.bind(this));
   }
@@ -187,7 +185,7 @@ export class WorkerRPC {
    * @param {string} action - The action to handle
    * @param {Function} handler - Async function to handle the action
    */
-  register<T = unknown>(action: string, handler: HandlerFunction<T>) {
+  register(action: string, handler: HandlerFunction) {
     this.handlers.set(action, handler);
   }
 

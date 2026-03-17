@@ -8,7 +8,7 @@
  * - Semantic consistency support for multi-page narratives
  */
 
-import type { BookSettings, OutlineItem } from '../types';
+import type { BookSettings } from '../types';
 
 /**
  * Visual style descriptors for image generation

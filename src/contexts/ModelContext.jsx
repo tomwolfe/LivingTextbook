@@ -132,7 +132,7 @@ export const ModelProvider = ({ children }) => {
   useEffect(() => {
     // Create worker
     workerRef.current = new Worker(
-      new URL('./workers/GenerationWorker.js', import.meta.url),
+      new URL('../workers/GenerationWorker.js', import.meta.url),
       { type: 'module' }
     );
 
