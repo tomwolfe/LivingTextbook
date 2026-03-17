@@ -72,6 +72,37 @@
   flex-direction: column;
   min-height: 600px;
   border: 1px solid #e2e8f0;
+  transition: transform 0.3s ease-in-out, opacity 0.3s ease-in-out;
+}
+
+.book-page.flipping {
+  transform: rotateY(10deg) translateX(-20px);
+  opacity: 0.7;
+}
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.page-indicator {
+  font-size: 0.875rem;
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.page-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  opacity: 0.9;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .page-image {
@@ -97,6 +128,7 @@
 
 .page-content {
   padding: 2.5rem;
+  flex: 1;
 }
 
 .page-content h1 {
@@ -115,7 +147,36 @@
 
 .book-controls {
   display: flex;
-  justify-content: flex-end;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+}
+
+.nav-btn {
+  padding: 0.75rem 1.5rem;
+  background: #6366f1;
+  color: white;
+  border: none;
+  border-radius: 0.5rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.nav-btn:hover:not(:disabled) {
+  background: #4f46e5;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 6px -1px rgba(99, 102, 241, 0.3);
+}
+
+.nav-btn:disabled {
+  background: #a5b4fc;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.prev-btn {
+  margin-right: auto;
 }
 
 .export-btn {
@@ -139,4 +200,30 @@
   background: #6ee7b7;
   cursor: not-allowed;
   opacity: 0.7;
+}
+
+.page-dots {
+  display: flex;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #cbd5e1;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.dot:hover {
+  background: #94a3b8;
+  transform: scale(1.2);
+}
+
+.dot.active {
+  background: #6366f1;
+  width: 24px;
+  border-radius: 5px;
 }

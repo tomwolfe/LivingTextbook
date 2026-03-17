@@ -1,12 +1,14 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useModel, ModelStatus } from '../contexts/ModelContext';
 import './ControlPanel.css';
 
 /**
- * Enhanced ControlPanel with model state validation
+ * Enhanced ControlPanel with model state validation and debounced live updates
  */
 const ControlPanel = ({ settings, setSettings, onGenerate, loading }) => {
   const { textModel, imageModel, isWebGPUSupported } = useModel();
+  const debounceRef = useRef(null);
+  const hasGeneratedRef = useRef(false);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -16,13 +18,41 @@ const ControlPanel = ({ settings, setSettings, onGenerate, loading }) => {
     }));
   };
 
+  // Debounced live update for text regeneration (not images to save GPU)
+  useEffect(() => {
+    // Only trigger after initial generation and if subject exists
+    if (!hasGeneratedRef.current || !settings.subject) return;
+
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+    }
+
+    debounceRef.current = setTimeout(() => {
+      // Trigger a text-only regeneration (future enhancement)
+      console.log('Live update triggered (text-only regeneration would happen here)');
+    }, 1000);
+
+    return () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+      }
+    };
+  }, [settings.tone, settings.style, settings.complexity, settings.level]);
+
+  // Track when generation has occurred
+  useEffect(() => {
+    if (loading) {
+      hasGeneratedRef.current = true;
+    }
+  }, [loading]);
+
   // Determine if generation should be blocked
-  const isModelsLoading = textModel.status === ModelStatus.LOADING || 
+  const isModelsLoading = textModel.status === ModelStatus.LOADING ||
                           imageModel.status === ModelStatus.LOADING;
-  const hasModelError = textModel.status === ModelStatus.ERROR || 
+  const hasModelError = textModel.status === ModelStatus.ERROR ||
                         imageModel.status === ModelStatus.ERROR;
   const isWebGPURequiredButMissing = !isWebGPUSupported && imageModel.status !== ModelStatus.READY;
-  
+
   // Block generation if:
   // - Models are currently loading
   // - There's a model error

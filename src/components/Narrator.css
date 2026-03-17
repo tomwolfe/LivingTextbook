@@ -7,6 +7,11 @@
   align-items: flex-end;
   gap: 1rem;
   z-index: 1000;
+  transition: transform 0.3s ease-in-out;
+}
+
+.narrator.showing-quip {
+  transform: scale(1.05);
 }
 
 .speech-bubble {
@@ -20,6 +25,26 @@
   font-weight: 500;
   color: #1e293b;
   position: relative;
+  transition: all 0.3s ease-in-out;
+}
+
+.speech-bubble.quip-bubble {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  border-color: #f59e0b;
+  max-width: 300px;
+  animation: pop 0.3s ease-out;
+}
+
+@keyframes pop {
+  0% {
+    transform: scale(0.9);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 .character {

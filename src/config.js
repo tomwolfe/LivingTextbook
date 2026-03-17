@@ -6,10 +6,14 @@
 export const config = {
   // Text Generation Model Configuration
   textGen: {
-    // WebGPU-optimized model
+    // WebGPU-optimized model (quantized for smaller footprint)
+    // Using MHA variant for better performance
     modelIdWebGPU: 'onnx-community/SmolLM2-135M-Instruct-ONNX-MHA',
     // Fallback CPU model (same model, different execution)
     modelIdCPU: 'onnx-community/SmolLM2-135M-Instruct-ONNX-MHA',
+    // Alternative: Even smaller model (360M params but more quantized)
+    // modelIdWebGPU: 'onnx-community/Qwen2.5-0.5B-Instruct-ONNX',
+    // modelIdCPU: 'onnx-community/Qwen2.5-0.5B-Instruct-ONNX',
     maxNewTokens: 150,
     temperature: 0.7,
     doSample: true,
@@ -23,6 +27,9 @@ export const config = {
     width: 512,
     height: 512,
     seedRange: { min: 0, max: 1000000 },
+    // Note: For smaller image models, consider:
+    // - 'tiny-sd' (smaller but lower quality)
+    // - 'latent-consistency-model' (faster inference)
   },
 
   // Transformers.js Environment Settings
@@ -47,6 +54,8 @@ export const config = {
       level: 'Student',
     },
     levelOptions: ['Toddler', 'Student', 'Expert'],
+    // Number of pages to generate per book
+    defaultNumPages: 3,
   },
 };
 

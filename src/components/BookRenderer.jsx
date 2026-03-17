@@ -17,10 +17,11 @@ const blobToBase64 = (blob) => {
 };
 
 /**
- * BookRenderer component with enhanced PDF export
+ * BookRenderer component with enhanced PDF export and page navigation
  */
-const BookRenderer = ({ bookData, loading }) => {
+const BookRenderer = ({ bookData, loading, currentPage, totalPages, onPageChange, hasOutline }) => {
   const [exporting, setExporting] = useState(false);
+  const [isFlipping, setIsFlipping] = useState(false);
 
   /**
    * Enhanced PDF export with image embedding
@@ -105,8 +106,20 @@ const BookRenderer = ({ bookData, loading }) => {
     }
   }, [bookData]);
 
+  /**
+   * Handle page change with animation
+   */
+  const handlePageChange = useCallback((newPage) => {
+    if (newPage < 0 || newPage >= totalPages) return;
+    setIsFlipping(true);
+    setTimeout(() => {
+      onPageChange(newPage);
+      setIsFlipping(false);
+    }, 300);
+  }, [onPageChange, totalPages]);
+
   // Empty state
-  if (!bookData && !loading) {
+  if (!bookData && !loading && !hasOutline) {
     return (
       <div className="book-empty">
         <h2>Your book will appear here</h2>
@@ -115,19 +128,34 @@ const BookRenderer = ({ bookData, loading }) => {
     );
   }
 
-  // Loading state
-  if (loading) {
+  // Loading state (generating outline)
+  if (loading && !bookData) {
     return (
       <div className="book-loading">
         <div className="spinner"></div>
-        <p>Consulting the AI library...</p>
+        <p>Creating book outline...</p>
+      </div>
+    );
+  }
+
+  // Page loading state
+  if (loading && bookData) {
+    return (
+      <div className="book-loading">
+        <div className="spinner"></div>
+        <p>Generating page {currentPage + 1} of {totalPages}...</p>
       </div>
     );
   }
 
   return (
     <div className="book-container">
-      <div className="book-page">
+      <div className={`book-page ${isFlipping ? 'flipping' : ''}`}>
+        <div className="page-header">
+          <span className="page-indicator">Page {currentPage + 1} of {totalPages}</span>
+          {bookData.title && <span className="page-title">{bookData.title}</span>}
+        </div>
+        
         <div className="page-image">
           {bookData.image?.imageUrl ? (
             <img src={bookData.image.imageUrl} alt={bookData.subject} />
@@ -142,13 +170,39 @@ const BookRenderer = ({ bookData, loading }) => {
       </div>
 
       <div className="book-controls">
-        <button 
-          onClick={exportPDF} 
+        <button
+          onClick={() => handlePageChange(currentPage - 1)}
+          disabled={currentPage === 0}
+          className="nav-btn prev-btn"
+        >
+          ← Previous
+        </button>
+        
+        <button
+          onClick={exportPDF}
           className="export-btn"
-          disabled={exporting}
+          disabled={exporting || !bookData}
         >
           {exporting ? 'Exporting...' : 'Download PDF'}
         </button>
+        
+        <button
+          onClick={() => handlePageChange(currentPage + 1)}
+          disabled={currentPage === totalPages - 1}
+          className="nav-btn next-btn"
+        >
+          Next →
+        </button>
+      </div>
+
+      <div className="page-dots">
+        {Array.from({ length: totalPages }).map((_, idx) => (
+          <span
+            key={idx}
+            className={`dot ${idx === currentPage ? 'active' : ''}`}
+            onClick={() => handlePageChange(idx)}
+          />
+        ))}
       </div>
     </div>
   );

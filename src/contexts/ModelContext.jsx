@@ -247,7 +247,7 @@ export const ModelProvider = ({ children }) => {
   /**
    * Generate text from a prompt
    */
-  const generateText = useCallback(async (prompt) => {
+  const generateText = useCallback(async (prompt, options = {}) => {
     if (!textGenerator.current) {
       const success = await initTextModel();
       if (!success) {
@@ -255,36 +255,60 @@ export const ModelProvider = ({ children }) => {
       }
     }
 
-    setTextModelState(prev => ({ ...prev, loading: true, status: 'Generating Content...' }));
+    if (!options.skipStatus) {
+      setTextModelState(prev => ({ ...prev, loading: true, status: 'Generating Content...' }));
+    }
 
     try {
       const messages = [
-        { role: 'system', content: 'You are a helpful educational assistant.' },
+        { role: 'system', content: options.systemPrompt || 'You are a helpful educational assistant.' },
         { role: 'user', content: prompt },
       ];
 
       const output = await textGenerator.current(messages, {
-        max_new_tokens: config.textGen.maxNewTokens,
-        temperature: config.textGen.temperature,
-        do_sample: config.textGen.doSample,
+        max_new_tokens: options.maxTokens || config.textGen.maxNewTokens,
+        temperature: options.temperature || config.textGen.temperature,
+        do_sample: options.doSample ?? config.textGen.doSample,
       });
 
-      setTextModelState(prev => ({ ...prev, loading: false, status: ModelStatus.READY }));
+      if (!options.skipStatus) {
+        setTextModelState(prev => ({ ...prev, loading: false, status: ModelStatus.READY }));
+      }
 
       // Extract content from chat format
       const content = output[0]?.generated_text?.[output[0].generated_text.length - 1]?.content;
       return content || 'No content generated.';
     } catch (err) {
       console.error('Text generation error:', err);
-      setTextModelState(prev => ({
-        ...prev,
-        loading: false,
-        status: ModelStatus.ERROR,
-        error: err.message || 'Generation failed',
-      }));
+      if (!options.skipStatus) {
+        setTextModelState(prev => ({
+          ...prev,
+          loading: false,
+          status: ModelStatus.ERROR,
+          error: err.message || 'Generation failed',
+        }));
+      }
       return null;
     }
   }, [initTextModel]);
+
+  /**
+   * Generate a witty quip from the narrator
+   */
+  const generateQuip = useCallback(async (content, subject) => {
+    try {
+      const quip = await generateText(content, {
+        systemPrompt: 'You are Logic the Lemur, a sassy, playful character who breaks the fourth wall.',
+        maxTokens: 50,
+        temperature: 0.9,
+        skipStatus: true,
+      });
+      return quip;
+    } catch (err) {
+      console.warn('Failed to generate quip:', err);
+      return null;
+    }
+  }, [generateText]);
 
   /**
    * Generate image from a prompt
@@ -385,6 +409,7 @@ export const ModelProvider = ({ children }) => {
   const contextValue = useMemo(() => ({
     // Text generation
     generateText,
+    generateQuip,
     textModel: textModelState,
     initTextModel,
     unloadTextModel,
@@ -404,6 +429,7 @@ export const ModelProvider = ({ children }) => {
     isWebGPUSupported: webgpuCapabilities?.webgpu && webgpuCapabilities?.shaderF16,
   }), [
     generateText,
+    generateQuip,
     textModelState,
     initTextModel,
     unloadTextModel,
