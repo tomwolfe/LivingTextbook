@@ -1,15 +1,17 @@
 import { useState, useCallback } from 'react';
 import jsPDF from 'jspdf';
+import type { Book, ImageResult } from '../types';
+import type { UsePdfExportReturn } from '../types';
 
 /**
  * Convert blob to base64 data URL
- * @param {Blob} blob - Image blob
- * @returns {Promise<string>} - Base64 data URL
+ * @param blob - Image blob
+ * @returns Base64 data URL
  */
-const blobToBase64 = (blob) => {
+const blobToBase64 = (blob: Blob): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result);
+    reader.onloadend = () => resolve(reader.result as string);
     reader.onerror = reject;
     reader.readAsDataURL(blob);
   });
@@ -18,25 +20,33 @@ const blobToBase64 = (blob) => {
 /**
  * Sleep utility for chunking
  */
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * usePdfExport Hook
  * Handles PDF export with async processing to avoid blocking the main thread
- * 
- * @param {Object} options - Hook options
- * @param {Object} options.bookData - Book data to export
- * @returns {Object} PDF export state and handlers
+ * Memory-safe: explicitly nullifies base64 strings after use to encourage GC
+ *
+ * @param options - Hook options
+ * @param options.bookData - Book data to export
+ * @returns PDF export state and handlers
  */
-export function usePdfExport({ bookData } = {}) {
+export function usePdfExport({ bookData }: { bookData?: Book | null } = {}): UsePdfExportReturn {
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
-  const [exportError, setExportError] = useState(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   /**
    * Add footer with page number to PDF
    */
-  const addFooter = useCallback((doc, pageNum, totalPages, pageWidth, pageHeight, margin) => {
+  const addFooter = useCallback((
+    doc: jsPDF,
+    pageNum: number,
+    totalPages: number,
+    pageWidth: number,
+    pageHeight: number,
+    margin: number
+  ) => {
     doc.setFontSize(8);
     doc.setTextColor(128);
     doc.text(
@@ -61,6 +71,7 @@ export function usePdfExport({ bookData } = {}) {
   /**
    * Export PDF with async processing
    * Uses requestAnimationFrame and chunking to avoid blocking the main thread
+   * Memory-safe: nullifies base64 strings after use
    */
   const exportPDF = useCallback(async () => {
     if (!bookData || !bookData.subject) return;
@@ -68,6 +79,9 @@ export function usePdfExport({ bookData } = {}) {
     setExporting(true);
     setExportProgress(0);
     setExportError(null);
+
+    // Track base64 strings for cleanup
+    let base64String: string | null = null;
 
     try {
       const doc = new jsPDF({
@@ -104,16 +118,18 @@ export function usePdfExport({ bookData } = {}) {
       );
 
       // Cover image if available - process asynchronously
-      if (bookData.image?.blob) {
+      // Note: Book has pages array, cover image would be from first page
+      const coverPage = bookData.pages?.[0];
+      if (coverPage?.image?.blob) {
         try {
           // Yield to main thread
           await sleep(0);
-          const imageData = await blobToBase64(bookData.image.blob);
-          if (imageData) {
+          base64String = await blobToBase64(coverPage.image.blob);
+          if (base64String) {
             const coverImageSize = 80;
             const coverImageX = (pageWidth - coverImageSize) / 2;
             doc.addImage(
-              imageData,
+              base64String,
               'JPEG',
               coverImageX,
               60,
@@ -123,6 +139,8 @@ export function usePdfExport({ bookData } = {}) {
               'FAST'
             );
           }
+          // Nullify to encourage GC
+          base64String = null;
         } catch (err) {
           console.warn('Cover image failed:', err);
         }
@@ -131,7 +149,7 @@ export function usePdfExport({ bookData } = {}) {
       // Metadata on cover
       doc.setFontSize(10);
       doc.setTextColor(100);
-      const metaY = bookData.image?.blob ? 150 : 100;
+      const metaY = coverPage?.image?.blob ? 150 : 100;
 
       if (bookData.settings) {
         doc.text(`Reading Level: ${bookData.settings.level}`, pageWidth / 2, metaY, { align: 'center' });
@@ -193,13 +211,13 @@ export function usePdfExport({ bookData } = {}) {
           try {
             // Yield to main thread before image processing
             await sleep(0);
-            const imageData = await blobToBase64(page.image.blob);
-            if (imageData) {
+            base64String = await blobToBase64(page.image.blob);
+            if (base64String) {
               const imageHeight = contentWidth;
               const imageY = margin + 25;
 
               doc.addImage(
-                imageData,
+                base64String,
                 'JPEG',
                 margin,
                 imageY,
@@ -224,6 +242,8 @@ export function usePdfExport({ bookData } = {}) {
               const splitText = doc.splitTextToSize(page.content || '', contentWidth);
               doc.text(splitText, margin, margin + 25);
             }
+            // Nullify to encourage GC
+            base64String = null;
           } catch (err) {
             console.warn(`Page ${i + 1} image failed:`, err);
             // Fallback to text only
@@ -253,7 +273,6 @@ export function usePdfExport({ bookData } = {}) {
         author: 'Living Textbook AI',
         creator: 'Living Textbook',
         keywords: `education, ${bookData.subject}, AI-generated, ${bookData.settings?.level || 'general'}`,
-        creationDate: new Date(),
       });
 
       // Yield before saving
@@ -268,8 +287,10 @@ export function usePdfExport({ bookData } = {}) {
       setExportProgress(100);
     } catch (error) {
       console.error('PDF export failed:', error);
-      setExportError(error.message || 'Failed to export PDF');
+      setExportError((error as Error).message || 'Failed to export PDF');
     } finally {
+      // Ensure base64 string is nullified
+      base64String = null;
       setExporting(false);
     }
   }, [bookData, addFooter]);

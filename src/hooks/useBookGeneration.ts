@@ -21,10 +21,12 @@ export function useBookGeneration({
   generateOutline,
   startBookGeneration,
   cancelBookGeneration,
+  subscribeToWorkerEvents,
 }: {
   generateOutline?: (subject: string, settings: BookSettings, numPages: number) => Promise<string>;
   startBookGeneration?: (settings: BookSettings, outline: OutlineItem[], numPages: number) => Promise<void>;
   cancelBookGeneration?: () => Promise<void>;
+  subscribeToWorkerEvents?: (callback: (data: { type: string; payload?: Record<string, unknown> }) => void) => () => void;
 } = {}): UseBookGenerationReturn {
   const [bookData, setBookData] = useState<Book | null>(null);
   const [outline, setOutline] = useState<OutlineItem[] | null>(null);
@@ -33,6 +35,8 @@ export function useBookGeneration({
   const [isGenerating, setIsGenerating] = useState(false);
 
   const pendingGenerationsRef = useRef<Set<number>>(new Set());
+  // Track generated image URLs to prevent memory leaks
+  const generatedImageUrlsRef = useRef<Set<string>>(new Set());
 
   /**
    * Parse outline from LLM response with robust JSON extraction
@@ -169,15 +173,16 @@ export function useBookGeneration({
   }, []);
 
   /**
-   * Handle worker generation events
+   * Handle worker generation events via context subscription
    */
   useEffect(() => {
-    const handleWorkerEvent = (event: Event) => {
-      const customEvent = event as CustomEvent<{
-        type: string;
-        payload?: { pageNum?: number; pageData?: Book['pages'][number]; error?: string };
-      }>;
-      const { type, payload } = customEvent.detail || {};
+    if (!subscribeToWorkerEvents) return;
+
+    const handleWorkerEvent = (data: {
+      type: string;
+      payload?: { pageNum?: number; pageData?: Book['pages'][number]; error?: string };
+    }) => {
+      const { type, payload } = data;
 
       switch (type) {
         case 'PAGE_START': {
@@ -194,7 +199,7 @@ export function useBookGeneration({
             setBookData(prev => {
               if (!prev) return prev;
               const newPages = [...(prev.pages || [])];
-              
+
               // Reconstruct image from buffer if needed
               let processedPageData = pageData;
               const imageData = pageData.image as unknown as { buffer?: ArrayBuffer; type?: string; imageUrl?: string; blob?: Blob; cached?: boolean } | null | undefined;
@@ -203,6 +208,7 @@ export function useBookGeneration({
                   const { buffer, type } = imageData;
                   const blob = new Blob([buffer], { type: type || 'image/png' });
                   const imageUrl = URL.createObjectURL(blob);
+                  generatedImageUrlsRef.current.add(imageUrl);
                   processedPageData = {
                     ...pageData,
                     image: {
@@ -215,7 +221,7 @@ export function useBookGeneration({
                   console.error('Failed to reconstruct image from buffer:', err);
                 }
               }
-              
+
               newPages[pageNum] = processedPageData;
               return { ...prev, pages: newPages };
             });
@@ -244,11 +250,12 @@ export function useBookGeneration({
       }
     };
 
-    window.addEventListener('worker-generation-event', handleWorkerEvent as EventListener);
+    // Subscribe to worker events via context
+    const unsubscribe = subscribeToWorkerEvents(handleWorkerEvent);
     return () => {
-      window.removeEventListener('worker-generation-event', handleWorkerEvent as EventListener);
+      unsubscribe();
     };
-  }, []);
+  }, [subscribeToWorkerEvents]);
 
   /**
    * Start generating a book
@@ -322,15 +329,41 @@ export function useBookGeneration({
   }, []);
 
   /**
-   * Clear book data
+   * Clear book data and revoke all generated image URLs
    */
   const clearBook = useCallback((): void => {
+    // Revoke all generated image URLs to prevent memory leaks
+    generatedImageUrlsRef.current.forEach(url => {
+      try {
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.warn('Failed to revoke blob URL:', err);
+      }
+    });
+    generatedImageUrlsRef.current.clear();
+
     setBookData(null);
     setOutline(null);
     setGeneratingPages([]);
     setGenerationError(null);
     setIsGenerating(false);
     pendingGenerationsRef.current.clear();
+  }, []);
+
+  /**
+   * Cleanup generated image URLs on unmount
+   */
+  useEffect(() => {
+    return () => {
+      generatedImageUrlsRef.current.forEach(url => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch (err) {
+          console.warn('Failed to revoke blob URL on unmount:', err);
+        }
+      });
+      generatedImageUrlsRef.current.clear();
+    };
   }, []);
 
   return {

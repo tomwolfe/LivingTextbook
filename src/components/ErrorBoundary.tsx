@@ -1,12 +1,28 @@
-import React, { Component } from 'react';
+import React, { Component, ErrorInfo, ReactNode } from 'react';
 import './ErrorBoundary.css';
+
+/**
+ * Error Boundary component state
+ */
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+  errorInfo: ErrorInfo | null;
+}
+
+/**
+ * Error Boundary component props
+ */
+interface ErrorBoundaryProps {
+  children: ReactNode;
+}
 
 /**
  * Error Boundary component to catch and display errors gracefully
  * Provides retry mechanism for recoverable errors
  */
-class ErrorBoundary extends Component {
-  constructor(props) {
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
     super(props);
     this.state = {
       hasError: false,
@@ -15,11 +31,11 @@ class ErrorBoundary extends Component {
     };
   }
 
-  static getDerivedStateFromError(error) {
-    return { hasError: true, error };
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error, errorInfo: null };
   }
 
-  componentDidCatch(error, errorInfo) {
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('ErrorBoundary caught an error:', error, errorInfo);
     this.setState({ errorInfo });
   }
@@ -56,7 +72,7 @@ class ErrorBoundary extends Component {
             {import.meta.env.DEV && this.state.errorInfo && (
               <details className="error-details">
                 <summary>Technical Details</summary>
-                <pre>{this.state.errorInfo?.componentStack}</pre>
+                <pre>{this.state.errorInfo.componentStack}</pre>
               </details>
             )}
             <div className="error-actions">

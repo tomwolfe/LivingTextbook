@@ -65,6 +65,7 @@ export const ModelActionsContext = createContext<null | {
   unloadImageModel: () => Promise<void>;
   startBookGeneration: (settings: BookSettings, outline: OutlineItem[], numPages: number) => Promise<void>;
   cancelBookGeneration: () => Promise<void>;
+  subscribeToWorkerEvents: (callback: (data: { type: string; payload?: Record<string, unknown> }) => void) => () => void;
   unloadAllModels: () => Promise<void>;
   retryInit: (modelType: 'text' | 'image') => Promise<boolean>;
   getModelStatus: () => Promise<Record<string, string> | null>;
@@ -139,6 +140,8 @@ export const ModelProvider = ({ children }: { children: ReactNode }) => {
   const rpcRef = useRef<MainThreadRPC | null>(null);
   // Track blob URLs to prevent memory leaks
   const blobUrlsRef = useRef<Set<string>>(new Set());
+  // Event subscribers for worker events (replaces window.dispatchEvent)
+  const workerEventSubscribersRef = useRef<Set<(data: { type: string; payload?: Record<string, unknown> }) => void>>(new Set());
 
   /**
    * Detect WebGPU capabilities and device resources on mount
@@ -305,8 +308,14 @@ export const ModelProvider = ({ children }: { children: ReactNode }) => {
         case 'PAGE_ERROR':
         case 'QUEUE_COMPLETE':
         case 'GENERATION_CANCELLED': {
-          // Forward these events via custom event for App to listen to
-          window.dispatchEvent(new CustomEvent('worker-generation-event', { detail: data }));
+          // Forward these events via PubSub instead of window.dispatchEvent
+          workerEventSubscribersRef.current.forEach(callback => {
+            try {
+              callback(data as { type: string; payload?: Record<string, unknown> });
+            } catch (err) {
+              console.error('Worker event subscriber error:', err);
+            }
+          });
           break;
         }
 
@@ -326,6 +335,9 @@ export const ModelProvider = ({ children }: { children: ReactNode }) => {
         }
       });
       blobUrlsRef.current.clear();
+
+      // Clear all worker event subscribers
+      workerEventSubscribersRef.current.clear();
 
       if (rpcRef.current) {
         rpcRef.current.cleanup();
@@ -684,6 +696,17 @@ export const ModelProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   /**
+   * Subscribe to worker events
+   */
+  const subscribeToWorkerEvents = useCallback((callback: (data: { type: string; payload?: Record<string, unknown> }) => void) => {
+    workerEventSubscribersRef.current.add(callback);
+    // Return unsubscribe function
+    return () => {
+      workerEventSubscribersRef.current.delete(callback);
+    };
+  }, []);
+
+  /**
    * Retry model initialization after error
    */
   const retryInit = useCallback(async (modelType: 'text' | 'image'): Promise<boolean> => {
@@ -751,6 +774,7 @@ export const ModelProvider = ({ children }: { children: ReactNode }) => {
     // Book generation orchestration
     startBookGeneration,
     cancelBookGeneration,
+    subscribeToWorkerEvents,
 
     // General
     unloadAllModels,

@@ -460,7 +460,7 @@ async function processGenerationQueue() {
   isGenerating = true;
 
   while (generationQueue.length > 0) {
-    // Check for abort before processing each page
+    // Check for abort BEFORE processing each page
     if (abortController?.signal.aborted) {
       generationQueue = [];
       isGenerating = false;
@@ -474,7 +474,23 @@ async function processGenerationQueue() {
     rpc.sendEvent('PAGE_START', { pageNum });
 
     try {
+      // Double-check abort before starting generation
+      if (abortController?.signal.aborted) {
+        generationQueue = [];
+        isGenerating = false;
+        rpc.sendEvent('GENERATION_CANCELLED', {});
+        return;
+      }
+
       const pageData = await generatePage(pageNum, pageOutline);
+
+      // Check for abort AFTER generation completes (before sending result)
+      if (abortController?.signal.aborted) {
+        generationQueue = [];
+        isGenerating = false;
+        rpc.sendEvent('GENERATION_CANCELLED', {});
+        return;
+      }
 
       // Send generated page data back to main thread
       rpc.sendEvent('PAGE_COMPLETE', {
@@ -483,7 +499,7 @@ async function processGenerationQueue() {
       });
     } catch (err) {
       const errorMessage = err.message || 'Generation failed';
-      
+
       // Check if this was a cancellation
       if (errorMessage.includes('cancelled')) {
         generationQueue = [];
@@ -491,7 +507,7 @@ async function processGenerationQueue() {
         rpc.sendEvent('GENERATION_CANCELLED', {});
         return;
       }
-      
+
       console.error(`Worker: Failed to generate page ${pageNum}:`, err);
       rpc.sendEvent('PAGE_ERROR', {
         pageNum,
@@ -614,13 +630,14 @@ rpc.register('CANCEL_GENERATION', async () => {
     // Create a new AbortController for future generations
     abortController = new AbortController();
   }
-  
+
+  // Synchronously clear the queue to prevent race conditions
   generationQueue = [];
   isGenerating = false;
-  
+
   // Notify main thread that generation was cancelled
   rpc.sendEvent('GENERATION_CANCELLED', {});
-  
+
   return { cancelled: true };
 });
 

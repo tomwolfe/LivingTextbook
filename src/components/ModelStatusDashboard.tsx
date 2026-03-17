@@ -1,15 +1,16 @@
 import React from 'react';
 import { useModelActions, useModelState, ModelStatus } from '../contexts/ModelContext';
 import { Cpu, Zap, AlertCircle, CheckCircle, Loader2, MemoryStick, Gauge, ToggleLeft } from 'lucide-react';
+import type { ModelStatusDashboardProps, CacheStats } from '../types';
 import './ModelStatusDashboard.css';
 
 /**
  * ModelStatusDashboard - Displays AI model status and WebGPU capabilities
  */
-const ModelStatusDashboard = ({ collapsed = false }) => {
+const ModelStatusDashboard: React.FC<ModelStatusDashboardProps> = ({ collapsed = false }) => {
   const actions = useModelActions();
   const state = useModelState();
-  
+
   const {
     textModel,
     qualityTextModel,
@@ -18,23 +19,32 @@ const ModelStatusDashboard = ({ collapsed = false }) => {
     webgpuCapabilities,
     isWebGPUSupported,
     speedMode,
-    toggleSpeedMode,
     deviceResources,
   } = state;
 
-  const { fetchCacheStats, clearImageCache } = actions;
+  const { fetchCacheStats, clearImageCache, toggleSpeedMode } = actions;
 
-  const [cacheStats, setCacheStats] = React.useState({ imageCount: 0, estimatedSize: 'Unknown' });
+  const [cacheStats, setCacheStats] = React.useState<CacheStats>({ count: 0, sizeBytes: 0, sizeFormatted: 'Unknown' });
 
   React.useEffect(() => {
-    fetchCacheStats().then(setCacheStats);
+    fetchCacheStats().then((stats) => {
+      setCacheStats({
+        count: stats.count,
+        sizeBytes: stats.sizeBytes,
+        sizeFormatted: stats.sizeFormatted,
+      });
+    });
   }, [fetchCacheStats]);
 
   const handleClearCache = React.useCallback(async () => {
     if (confirm('Clear all cached images? This will not delete your generated books.')) {
       await clearImageCache();
       const newStats = await fetchCacheStats();
-      setCacheStats(newStats);
+      setCacheStats({
+        count: newStats.count,
+        sizeBytes: newStats.sizeBytes,
+        sizeFormatted: newStats.sizeFormatted,
+      });
     }
   }, [clearImageCache, fetchCacheStats]);
 
@@ -47,7 +57,7 @@ const ModelStatusDashboard = ({ collapsed = false }) => {
     );
   }
 
-  const getStatusIcon = (status) => {
+  const getStatusIcon = (status: string) => {
     switch (status) {
       case ModelStatus.READY:
         return <CheckCircle className="icon-success" size={18} />;
@@ -60,7 +70,7 @@ const ModelStatusDashboard = ({ collapsed = false }) => {
     }
   };
 
-  const getStatusClass = (status) => {
+  const getStatusClass = (status: string) => {
     switch (status) {
       case ModelStatus.READY:
         return 'status-ready';
@@ -93,7 +103,7 @@ const ModelStatusDashboard = ({ collapsed = false }) => {
           </button>
         </div>
         <div className="speed-mode-description">
-          {speedMode 
+          {speedMode
             ? '🚀 Reduced quality for faster generation'
             : '✨ Full quality mode'}
         </div>
@@ -101,7 +111,7 @@ const ModelStatusDashboard = ({ collapsed = false }) => {
           <div className="speed-mode-reason">
             <AlertCircle size={12} />
             <span>
-              {deviceResources.isLowMemory 
+              {deviceResources.isLowMemory
                 ? 'Auto-enabled due to device constraints'
                 : 'Manually enabled'}
             </span>
@@ -116,8 +126,8 @@ const ModelStatusDashboard = ({ collapsed = false }) => {
           <span>Image Cache</span>
         </div>
         <div className="cache-stats">
-          <span className="cache-count">{cacheStats.imageCount} images</span>
-          {cacheStats.imageCount > 0 && (
+          <span className="cache-count">{cacheStats.count} images</span>
+          {cacheStats.count > 0 && (
             <button className="cache-clear-btn" onClick={handleClearCache} title="Clear cached images">
               Clear Cache
             </button>
@@ -211,8 +221,8 @@ const ModelStatusDashboard = ({ collapsed = false }) => {
         </div>
         {imageModel.loading && (
           <div className="progress-bar">
-            <div 
-              className="progress-fill" 
+            <div
+              className="progress-fill"
               style={{ width: `${Math.min(imageModel.progress, 100)}%` }}
             />
             <span className="progress-text">{imageModel.progress}%</span>

@@ -1,16 +1,17 @@
 import React from 'react';
 import { useModel } from '../contexts/ModelContext';
 import { Book, Download, Upload, Trash2, Eye, X } from 'lucide-react';
+import type { Book as BookType, BookLibraryProps } from '../types';
 import './BookLibrary.css';
 
 /**
  * BookLibrary - Component for managing saved books
  */
-const BookLibrary = ({ isOpen, onClose, onLoadBook }) => {
+const BookLibrary: React.FC<BookLibraryProps> = ({ isOpen, onClose, onLoadBook }) => {
   const { getSavedBooks, deleteSavedBook, saveBookToDB } = useModel();
-  const [books, setBooks] = React.useState([]);
+  const [books, setBooks] = React.useState<BookType[]>([]);
   const [loading, setLoading] = React.useState(true);
-  const [previewBook, setPreviewBook] = React.useState(null);
+  const [previewBook, setPreviewBook] = React.useState<BookType | null>(null);
 
   // Load saved books when library opens
   React.useEffect(() => {
@@ -26,7 +27,7 @@ const BookLibrary = ({ isOpen, onClose, onLoadBook }) => {
     }
   }, [isOpen, getSavedBooks]);
 
-  const handleDelete = async (bookId, e) => {
+  const handleDelete = async (bookId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (confirm('Are you sure you want to delete this book?')) {
       await deleteSavedBook(bookId);
@@ -43,7 +44,7 @@ const BookLibrary = ({ isOpen, onClose, onLoadBook }) => {
     }
   };
 
-  const handleExport = async (book, e) => {
+  const handleExport = async (book: BookType, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
       const jsonString = JSON.stringify(book, null, 2);
@@ -51,7 +52,7 @@ const BookLibrary = ({ isOpen, onClose, onLoadBook }) => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `living-textbook-${book.subject.replace(/[^a-z0-9]/gi, '-')}-${new Date(book.createdAt).toISOString().split('T')[0]}.json`;
+      a.download = `living-textbook-${book.subject.replace(/[^a-z0-9]/gi, '-')}-${new Date(book.createdAt || Date.now()).toISOString().split('T')[0]}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -62,13 +63,13 @@ const BookLibrary = ({ isOpen, onClose, onLoadBook }) => {
     }
   };
 
-  const handleImport = async (e) => {
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     try {
       const text = await file.text();
-      const bookData = JSON.parse(text);
+      const bookData: Partial<BookType> = JSON.parse(text);
 
       // Validate book structure
       if (!bookData.subject || !bookData.pages || !Array.isArray(bookData.pages)) {
@@ -80,7 +81,7 @@ const BookLibrary = ({ isOpen, onClose, onLoadBook }) => {
         ...bookData,
         createdAt: bookData.createdAt || Date.now(),
         importedAt: Date.now(),
-      });
+      } as BookType);
 
       if (bookId) {
         alert('Book imported successfully!');
@@ -106,7 +107,7 @@ const BookLibrary = ({ isOpen, onClose, onLoadBook }) => {
     e.target.value = '';
   };
 
-  const handleLoad = (book) => {
+  const handleLoad = (book: BookType) => {
     if (onLoadBook) {
       onLoadBook(book);
     }
@@ -115,7 +116,7 @@ const BookLibrary = ({ isOpen, onClose, onLoadBook }) => {
     }
   };
 
-  const formatDate = (timestamp) => {
+  const formatDate = (timestamp: number) => {
     return new Date(timestamp).toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'short',
@@ -173,9 +174,9 @@ const BookLibrary = ({ isOpen, onClose, onLoadBook }) => {
                   <div className="book-item-info">
                     <h3>{book.subject}</h3>
                     <p className="book-meta">
-                      {book.pages?.length || 0} pages • {formatDate(book.createdAt)}
+                      {book.pages?.length || 0} pages • {formatDate(book.createdAt || Date.now())}
                     </p>
-                    {book.importedAt && (
+                    {('importedAt' in book && typeof book.importedAt === 'number' && book.importedAt) && (
                       <p className="book-imported">Imported book</p>
                     )}
                   </div>
@@ -199,7 +200,7 @@ const BookLibrary = ({ isOpen, onClose, onLoadBook }) => {
                     </button>
                     <button
                       className="action-btn delete"
-                      onClick={(e) => handleDelete(book.id, e)}
+                      onClick={(e) => handleDelete(book.id!, e)}
                       title="Delete"
                     >
                       <Trash2 size={16} />
@@ -222,7 +223,7 @@ const BookLibrary = ({ isOpen, onClose, onLoadBook }) => {
               </div>
               <div className="book-preview-content">
                 <div className="preview-meta">
-                  <span><strong>Created:</strong> {formatDate(previewBook.createdAt)}</span>
+                  <span><strong>Created:</strong> {formatDate(previewBook.createdAt || Date.now())}</span>
                   <span><strong>Pages:</strong> {previewBook.pages?.length || 0}</span>
                   {previewBook.settings && (
                     <>

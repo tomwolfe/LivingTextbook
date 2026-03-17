@@ -1,28 +1,49 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { usePdfExport } from '../hooks/usePdfExport';
+import { ImageOff } from 'lucide-react';
+import type { Book, Page, ImageResult, BookRendererProps } from '../types';
 import './BookRenderer.css';
+
+/**
+ * Extended BookRenderer props with full book reference
+ */
+interface BookRendererExtendedProps extends BookRendererProps {
+  fullBook?: Book | null;
+}
 
 /**
  * BookRenderer component with enhanced PDF export and page navigation
  */
-const BookRenderer = ({ bookData, loading, currentPage, totalPages, onPageChange, hasOutline, generateImage, fullBook }) => {
+const BookRenderer: React.FC<BookRendererExtendedProps> = ({
+  bookData,
+  loading,
+  currentPage,
+  totalPages,
+  onPageChange,
+  hasOutline,
+  generateImage,
+  fullBook,
+}) => {
   const [isFlipping, setIsFlipping] = useState(false);
   const [regeneratingImage, setRegeneratingImage] = useState(false);
+  const [imageError, setImageError] = useState(false);
 
   // Use the usePdfExport hook for PDF generation
+  // Note: Pass only fullBook since it has the complete Book structure with pages array
   const { exporting, exportProgress, exportError, exportPDF, cancelExport, resetExport } = usePdfExport({
-    bookData: fullBook || bookData,
+    bookData: fullBook || null,
   });
 
   /**
    * Handle page change with animation
    */
-  const handlePageChange = useCallback((newPage) => {
+  const handlePageChange = useCallback((newPage: number) => {
     if (newPage < 0 || newPage >= totalPages) return;
     setIsFlipping(true);
     setTimeout(() => {
       onPageChange(newPage);
       setIsFlipping(false);
+      setImageError(false); // Reset image error on page change
     }, 300);
   }, [onPageChange, totalPages]);
 
@@ -33,6 +54,7 @@ const BookRenderer = ({ bookData, loading, currentPage, totalPages, onPageChange
     if (!bookData || !generateImage) return;
 
     setRegeneratingImage(true);
+    setImageError(false);
 
     try {
       // Use the current image prompt or generate a new one based on subject
@@ -46,6 +68,7 @@ const BookRenderer = ({ bookData, loading, currentPage, totalPages, onPageChange
         window.dispatchEvent(new CustomEvent('book-image-updated', {
           detail: { currentPage, newImage: result }
         }));
+        setImageError(false);
       }
     } catch (err) {
       console.error('Failed to regenerate image:', err);
@@ -56,12 +79,20 @@ const BookRenderer = ({ bookData, loading, currentPage, totalPages, onPageChange
   }, [bookData, generateImage, currentPage]);
 
   /**
+   * Handle image load error
+   */
+  const handleImageError = useCallback(() => {
+    console.warn('Image failed to load for page:', currentPage);
+    setImageError(true);
+  }, [currentPage]);
+
+  /**
    * Keyboard navigation for pages
    */
   useEffect(() => {
-    const handleKeyDown = (e) => {
+    const handleKeyDown = (e: KeyboardEvent) => {
       // Only handle arrow keys when not in an input field
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
         return;
       }
 
@@ -144,6 +175,10 @@ const BookRenderer = ({ bookData, loading, currentPage, totalPages, onPageChange
     );
   }
 
+  // Determine if we should show image fallback
+  const showImageFallback = imageError || !bookData.image?.imageUrl;
+  const isGeneratingImage = loading;
+
   return (
     <div
       className="book-container"
@@ -162,9 +197,13 @@ const BookRenderer = ({ bookData, loading, currentPage, totalPages, onPageChange
         </div>
 
         <div className="page-image">
-          {bookData.image?.imageUrl ? (
+          {bookData.image?.imageUrl && !showImageFallback ? (
             <>
-              <img src={bookData.image.imageUrl} alt={bookData.image.alt || `Illustration for ${bookData.subject}`} />
+              <img
+                src={bookData.image.imageUrl}
+                alt={`Illustration for ${bookData.subject}`}
+                onError={handleImageError}
+              />
               <button
                 className="regenerate-image-btn"
                 onClick={handleRegenerateImage}
@@ -175,6 +214,19 @@ const BookRenderer = ({ bookData, loading, currentPage, totalPages, onPageChange
                 {regeneratingImage ? '🎨 Generating...' : '🔄 New Image'}
               </button>
             </>
+          ) : showImageFallback && !isGeneratingImage ? (
+            // Graceful fallback when image is missing or failed
+            <div className="image-fallback" role="status">
+              <ImageOff size={48} className="fallback-icon" />
+              <p>Image not available</p>
+              <button
+                className="retry-image-btn"
+                onClick={handleRegenerateImage}
+                disabled={regeneratingImage}
+              >
+                {regeneratingImage ? 'Generating...' : 'Try Again'}
+              </button>
+            </div>
           ) : (
             <div className="image-placeholder" role="status">Visualizing...</div>
           )}

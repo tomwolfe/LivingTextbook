@@ -290,6 +290,7 @@ export interface BookRendererProps {
  */
 export interface ModelStatusDashboardProps {
   // No props - uses useModel hook internally
+  collapsed?: boolean;
 }
 
 /**

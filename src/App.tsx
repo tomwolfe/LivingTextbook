@@ -33,6 +33,7 @@ function AppContent() {
     generateOutline,
     startBookGeneration,
     cancelBookGeneration,
+    subscribeToWorkerEvents,
   } = useModelActions();
 
   const { textModel: textModelState, imageModel: imageModelState } = useModelState();
@@ -51,6 +52,7 @@ function AppContent() {
     generateOutline,
     startBookGeneration,
     cancelBookGeneration,
+    subscribeToWorkerEvents,
   });
 
   /**
