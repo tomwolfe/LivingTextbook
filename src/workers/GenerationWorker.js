@@ -368,10 +368,10 @@ async function generateImageFromPrompt(prompt, options = {}) {
         negativePrompt,
       });
 
-      // Convert blob to ArrayBuffer for zero-copy transfer to main thread
+      // For RPC responses: return ArrayBuffer for zero-copy transfer
+      // The main thread will reconstruct the blob and create object URL
       const arrayBuffer = await result.blob.arrayBuffer();
-
-      // Return only the ArrayBuffer and metadata - main thread will create the Blob
+      
       return {
         buffer: arrayBuffer,
         type: result.blob.type || 'image/png',

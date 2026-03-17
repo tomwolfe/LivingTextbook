@@ -194,7 +194,29 @@ export function useBookGeneration({
             setBookData(prev => {
               if (!prev) return prev;
               const newPages = [...(prev.pages || [])];
-              newPages[pageNum] = pageData;
+              
+              // Reconstruct image from buffer if needed
+              let processedPageData = pageData;
+              const imageData = pageData.image as unknown as { buffer?: ArrayBuffer; type?: string; imageUrl?: string; blob?: Blob; cached?: boolean } | null | undefined;
+              if (imageData && imageData.buffer && !imageData.imageUrl) {
+                try {
+                  const { buffer, type } = imageData;
+                  const blob = new Blob([buffer], { type: type || 'image/png' });
+                  const imageUrl = URL.createObjectURL(blob);
+                  processedPageData = {
+                    ...pageData,
+                    image: {
+                      imageUrl,
+                      blob,
+                      cached: imageData.cached || false,
+                    },
+                  };
+                } catch (err) {
+                  console.error('Failed to reconstruct image from buffer:', err);
+                }
+              }
+              
+              newPages[pageNum] = processedPageData;
               return { ...prev, pages: newPages };
             });
             setGeneratingPages(prev => prev.filter(p => p !== pageNum));
