@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { config } from '../config';
 import { detectDeviceResources, getRecommendedSettings } from '../utils/resourceDetector.ts';
-import { saveBook, getBook, getAllBooks, deleteBook, getCacheStats, clearImageCache } from '../utils/imageCache.ts';
+import { saveBook, getBook, getAllBooks, deleteBook, getCacheStats, clearImageCache, getCachedImage } from '../utils/imageCache.ts';
 import { MainThreadRPC } from '../utils/workerRPC.ts';
 import { assertStorageAvailability, MODEL_SIZES } from '../utils/storageQuota';
 

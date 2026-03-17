@@ -296,29 +296,10 @@ async function generateQuip(content) {
 
 /**
  * Generate image from a prompt
+ * Note: Cache is checked by main thread before calling this function
  */
 async function generateImageFromPrompt(prompt, options = {}) {
-  const { useCache = true, negativePrompt } = options;
-
-  // Check cache first
-  const cachePrompt = negativePrompt ? `${prompt}|${negativePrompt}` : prompt;
-  if (useCache) {
-    try {
-      const cachedBlob = await getCachedImage(cachePrompt);
-      if (cachedBlob) {
-        console.log('[ImageCache] Hit for prompt:', prompt.substring(0, 50));
-        // Convert blob to ArrayBuffer for transfer
-        const arrayBuffer = await cachedBlob.arrayBuffer();
-        return { 
-          blob: arrayBuffer, 
-          type: cachedBlob.type, 
-          cached: true 
-        };
-      }
-    } catch (err) {
-      console.warn('[ImageCache] Failed to get cached image:', err);
-    }
-  }
+  const { negativePrompt } = options;
 
   // Initialize image model
   const initResult = await initImageModel();
@@ -356,7 +337,8 @@ async function generateImageFromPrompt(prompt, options = {}) {
     const result = await generateImage(generateImageParams);
 
     if (result?.ok && result?.blob) {
-      // Cache the generated image
+      // Cache the generated image for future use
+      const cachePrompt = negativePrompt ? `${prompt}|${negativePrompt}` : prompt;
       await cacheImage(cachePrompt, result.blob, {
         width: result.blob.width,
         height: result.blob.height,
