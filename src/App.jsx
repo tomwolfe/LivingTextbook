@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { ModelProvider, useModel } from './contexts/ModelContext';
+import { ModelProvider, useModelActions, useModelState } from './contexts/ModelContext';
 import ControlPanel from './components/ControlPanel';
 import BookRenderer from './components/BookRenderer';
 import Narrator from './components/Narrator';
@@ -79,8 +79,9 @@ function AppContent() {
     saveBookToDB,
     generateOutline,
     startBookGeneration,
-    resumeBookGeneration,
-  } = useModel();
+  } = useModelActions();
+
+  const { textModel: textModelState, imageModel: imageModelState } = useModelState();
 
   const pendingGenerationsRef = useRef(new Set());
 
@@ -197,18 +198,14 @@ function AppContent() {
       });
 
       // Step 3: Start generation in worker
+      // The worker will process the queue asynchronously - no need for resume call
       await startBookGeneration(settings, parsedOutline, NUM_PAGES);
-
-      // Step 4: Resume generation after delay
-      setTimeout(async () => {
-        await resumeBookGeneration();
-      }, 500);
 
     } catch (err) {
       console.error('Generation failed:', err);
       setBookData(null);
     }
-  }, [settings, generateOutline, startBookGeneration, resumeBookGeneration]);
+  }, [settings, generateOutline, startBookGeneration]);
 
   const handlePageChange = useCallback((newPage) => {
     if (newPage >= 0 && newPage < NUM_PAGES) {
@@ -245,11 +242,11 @@ function AppContent() {
     setCurrentPage(0);
   }, []);
 
-  const overallStatus = textModel.loading
-    ? textModel.status
-    : imageModel.loading
-      ? imageModel.status
-      : textModel.status;
+  const overallStatus = textModelState.loading
+    ? textModelState.status
+    : imageModelState.loading
+      ? imageModelState.status
+      : textModelState.status;
 
   const currentPageData = bookData?.pages?.[currentPage];
   const isLoadingPage = generatingPages.includes(currentPage);
@@ -300,12 +297,13 @@ function AppContent() {
             settings={settings}
             setSettings={setSettings}
             onGenerate={handleGenerate}
-            loading={textModel.loading || imageModel.loading}
+            loading={textModelState.loading || imageModelState.loading}
           />
 
           <ErrorBoundary>
             <BookRenderer
               bookData={currentPageData ? { ...currentPageData, subject: bookData.subject } : null}
+              fullBook={bookData}
               loading={isLoadingPage}
               currentPage={currentPage}
               totalPages={NUM_PAGES}
@@ -319,7 +317,7 @@ function AppContent() {
 
       <Narrator
         status={overallStatus}
-        progress={textModel.progress || imageModel.progress}
+        progress={textModelState.progress || imageModelState.progress}
         quip={currentPageData?.quip}
         hasContent={!!currentPageData?.content}
       />

@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { config } from '../config';
-import { detectDeviceResources, getRecommendedSettings } from '../utils/resourceDetector';
-import { saveBook, getBook, getAllBooks, deleteBook, getCacheStats, clearImageCache } from '../utils/imageCache';
-import { MainThreadRPC } from '../utils/workerRPC';
+import { detectDeviceResources, getRecommendedSettings } from '../utils/resourceDetector.ts';
+import { saveBook, getBook, getAllBooks, deleteBook, getCacheStats, clearImageCache } from '../utils/imageCache.ts';
+import { MainThreadRPC } from '../utils/workerRPC.ts';
 import { assertStorageAvailability, MODEL_SIZES } from '../utils/storageQuota';
 
 /**
@@ -37,9 +37,16 @@ const createInitialModelState = () => ({
 });
 
 /**
- * Model Context - provides AI model state and operations to all consumers
+ * Model Actions Context - provides stable async functions
+ * This context rarely changes, so consumers won't re-render on progress ticks
  */
-const ModelContext = createContext(null);
+export const ModelActionsContext = createContext(null);
+
+/**
+ * Model State Context - provides frequently updating state
+ * Only components that need to display progress should consume this
+ */
+export const ModelStateContext = createContext(null);
 
 /**
  * Provider component that manages AI model lifecycle via worker
@@ -70,6 +77,8 @@ export const ModelProvider = ({ children }) => {
   // Worker and RPC
   const workerRef = useRef(null);
   const rpcRef = useRef(null);
+  // Track blob URLs to prevent memory leaks
+  const blobUrlsRef = useRef(new Set());
 
   /**
    * Detect WebGPU capabilities and device resources on mount
@@ -147,8 +156,7 @@ export const ModelProvider = ({ children }) => {
         case 'MODEL_PROGRESS': {
           const { modelType, progress, status } = payload || {};
           if (modelType === 'fast' || modelType === 'quality') {
-            const setState = modelType === 'quality' ? setQualityTextModelState : setTextModelState;
-            setState(prev => ({
+            setQualityTextModelState(prev => ({
               ...prev,
               progress,
               status: status || prev.status,
@@ -168,8 +176,7 @@ export const ModelProvider = ({ children }) => {
         case 'MODEL_LOADED': {
           const { modelType, device, modelName } = payload || {};
           if (modelType === 'fast' || modelType === 'quality') {
-            const setState = modelType === 'quality' ? setQualityTextModelState : setTextModelState;
-            setState(prev => ({
+            setQualityTextModelState(prev => ({
               ...prev,
               status: ModelStatus.READY,
               loading: false,
@@ -177,9 +184,7 @@ export const ModelProvider = ({ children }) => {
               device: device || 'WebGPU',
               modelName: modelName || prev.modelName,
             }));
-            if (modelType === 'fast' || modelType === 'quality') {
-              setActiveTextModel(modelType);
-            }
+            setActiveTextModel(modelType);
           } else if (modelType === 'image') {
             setImageModelState(prev => ({
               ...prev,
@@ -195,8 +200,7 @@ export const ModelProvider = ({ children }) => {
         case 'MODEL_ERROR': {
           const { modelType, error } = payload || {};
           if (modelType === 'fast' || modelType === 'quality') {
-            const setState = modelType === 'quality' ? setQualityTextModelState : setTextModelState;
-            setState(prev => ({
+            setQualityTextModelState(prev => ({
               ...prev,
               status: ModelStatus.ERROR,
               loading: false,
@@ -216,8 +220,7 @@ export const ModelProvider = ({ children }) => {
         case 'MODEL_UNLOADED': {
           const { modelType } = payload || {};
           if (modelType === 'fast' || modelType === 'quality') {
-            const setState = modelType === 'quality' ? setQualityTextModelState : setTextModelState;
-            setState(createInitialModelState());
+            setQualityTextModelState(createInitialModelState());
           } else if (modelType === 'image') {
             setImageModelState(createInitialModelState());
           }
@@ -248,6 +251,16 @@ export const ModelProvider = ({ children }) => {
 
     // Cleanup on unmount
     return () => {
+      // Revoke all blob URLs to prevent memory leaks
+      blobUrlsRef.current.forEach(url => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch (err) {
+          console.warn('Failed to revoke blob URL:', err);
+        }
+      });
+      blobUrlsRef.current.clear();
+
       if (rpcRef.current) {
         rpcRef.current.cleanup();
       }
@@ -266,7 +279,6 @@ export const ModelProvider = ({ children }) => {
     }
 
     const isQuality = modelType === 'quality';
-    const setState = isQuality ? setQualityTextModelState : setTextModelState;
 
     // Check storage quota before downloading
     try {
@@ -274,6 +286,7 @@ export const ModelProvider = ({ children }) => {
       await assertStorageAvailability(requirement);
     } catch (err) {
       console.error('Storage check failed:', err);
+      const setState = isQuality ? setQualityTextModelState : setTextModelState;
       setState(prev => ({
         ...prev,
         status: ModelStatus.ERROR,
@@ -283,6 +296,7 @@ export const ModelProvider = ({ children }) => {
       return false;
     }
 
+    const setState = isQuality ? setQualityTextModelState : setTextModelState;
     setState(prev => ({ ...prev, status: ModelStatus.LOADING, loading: true, error: null }));
 
     try {
@@ -293,6 +307,7 @@ export const ModelProvider = ({ children }) => {
       return result[modelType]?.success || false;
     } catch (err) {
       console.error('Failed to initialize text model:', err);
+      const setState = isQuality ? setQualityTextModelState : setTextModelState;
       setState(prev => ({
         ...prev,
         status: ModelStatus.ERROR,
@@ -354,9 +369,9 @@ export const ModelProvider = ({ children }) => {
 
     const { complexity, skipStatus, ...generationOptions } = options;
     const isQuality = complexity >= config.textGen.complexityThreshold;
-    const setState = isQuality ? setQualityTextModelState : setTextModelState;
 
     if (!skipStatus) {
+      const setState = isQuality ? setQualityTextModelState : setTextModelState;
       setState(prev => ({ ...prev, loading: true, status: 'Generating Content...' }));
     }
 
@@ -370,6 +385,7 @@ export const ModelProvider = ({ children }) => {
       });
 
       if (!skipStatus) {
+        const setState = isQuality ? setQualityTextModelState : setTextModelState;
         setState(prev => ({ ...prev, loading: false, status: ModelStatus.READY }));
       }
 
@@ -377,6 +393,7 @@ export const ModelProvider = ({ children }) => {
     } catch (err) {
       console.error('Text generation error:', err);
       if (!skipStatus) {
+        const setState = isQuality ? setQualityTextModelState : setTextModelState;
         setState(prev => ({
           ...prev,
           loading: false,
@@ -424,6 +441,7 @@ export const ModelProvider = ({ children }) => {
         if (cachedBlob) {
           console.log('[ImageCache] Hit for prompt:', prompt.substring(0, 50));
           const imageUrl = URL.createObjectURL(cachedBlob);
+          blobUrlsRef.current.add(imageUrl);
           return { imageUrl, blob: cachedBlob, cached: true };
         }
       } catch (err) {
@@ -439,9 +457,13 @@ export const ModelProvider = ({ children }) => {
         options: { negativePrompt, useCache: false }, // Cache already checked above
       });
 
-      if (result?.imageUrl) {
+      // Worker now returns only the blob - create URL on main thread
+      if (result?.blob) {
+        const imageUrl = URL.createObjectURL(result.blob);
+        blobUrlsRef.current.add(imageUrl);
+
         setImageModelState(prev => ({ ...prev, loading: false, status: ModelStatus.READY }));
-        return result;
+        return { imageUrl, blob: result.blob, cached: result.cached || false };
       } else {
         throw new Error('Image generation failed');
       }
@@ -495,22 +517,6 @@ export const ModelProvider = ({ children }) => {
       return result;
     } catch (err) {
       console.error('Failed to start book generation:', err);
-      throw err;
-    }
-  }, []);
-
-  /**
-   * Resume book generation via worker
-   */
-  const resumeBookGeneration = useCallback(async () => {
-    if (!rpcRef.current) {
-      throw new Error('Worker not initialized');
-    }
-
-    try {
-      await rpcRef.current.send('RESUME_GENERATION');
-    } catch (err) {
-      console.error('Failed to resume generation:', err);
       throw err;
     }
   }, []);
@@ -651,27 +657,22 @@ export const ModelProvider = ({ children }) => {
     return recommended;
   }, [deviceResources, speedMode]);
 
-  // Context value - memoized to prevent unnecessary re-renders
-  const contextValue = useMemo(() => ({
+  // Actions context value - stable functions that don't change
+  const actionsContextValue = useMemo(() => ({
     // Text generation
     generateText,
     generateQuip,
     generateOutline,
-    textModel: textModelState,
-    qualityTextModel: qualityTextModelState,
-    activeTextModel,
     initTextModel,
     unloadTextModel,
 
     // Image generation
     generateImage: generateImageFromPrompt,
-    imageModel: imageModelState,
     initImageModel,
     unloadImageModel,
 
     // Book generation orchestration
     startBookGeneration,
-    resumeBookGeneration,
     cancelBookGeneration,
 
     // General
@@ -680,67 +681,110 @@ export const ModelProvider = ({ children }) => {
     getModelStatus,
 
     // Speed Mode and resource management
-    speedMode,
     toggleSpeedMode,
     getGenerationSettings,
-    deviceResources,
 
     // Cache management
     fetchCacheStats: getCacheStats,
     clearImageCache,
-
-    // Storage management
-    storageStatus,
 
     // Book management
     saveBookToDB: saveBook,
     getSavedBook: getBook,
     getSavedBooks: getAllBooks,
     deleteSavedBook: deleteBook,
-
-    // Capabilities
-    webgpuCapabilities,
-    isWebGPUSupported: webgpuCapabilities?.webgpu && webgpuCapabilities?.shaderF16,
   }), [
     generateText,
     generateQuip,
     generateOutline,
-    textModelState,
-    qualityTextModelState,
-    activeTextModel,
     initTextModel,
     unloadTextModel,
     generateImageFromPrompt,
-    imageModelState,
     initImageModel,
     unloadImageModel,
     startBookGeneration,
-    resumeBookGeneration,
     cancelBookGeneration,
     unloadAllModels,
     retryInit,
     getModelStatus,
-    speedMode,
     toggleSpeedMode,
     getGenerationSettings,
-    deviceResources,
     clearImageCache,
-    storageStatus,
-    webgpuCapabilities,
   ]);
 
-  return <ModelContext.Provider value={contextValue}>{children}</ModelContext.Provider>;
+  // State context value - frequently updating state
+  const stateContextValue = useMemo(() => ({
+    // Model state
+    textModel: textModelState,
+    qualityTextModel: qualityTextModelState,
+    imageModel: imageModelState,
+    activeTextModel,
+
+    // Speed Mode and resources
+    speedMode,
+    deviceResources,
+
+    // Capabilities
+    webgpuCapabilities,
+    isWebGPUSupported: webgpuCapabilities?.webgpu && webgpuCapabilities?.shaderF16,
+
+    // Storage
+    storageStatus,
+  }), [
+    textModelState,
+    qualityTextModelState,
+    imageModelState,
+    activeTextModel,
+    speedMode,
+    deviceResources,
+    webgpuCapabilities,
+    storageStatus,
+  ]);
+
+  return (
+    <ModelActionsContext.Provider value={actionsContextValue}>
+      <ModelStateContext.Provider value={stateContextValue}>
+        {children}
+      </ModelStateContext.Provider>
+    </ModelActionsContext.Provider>
+  );
 };
 
 /**
- * Hook to access model context
+ * Hook to access model actions context (stable functions)
+ * Use this hook in components that don't need progress updates
  */
-export const useModel = () => {
-  const context = useContext(ModelContext);
+export const useModelActions = () => {
+  const context = useContext(ModelActionsContext);
   if (!context) {
-    throw new Error('useModel must be used within a ModelProvider');
+    throw new Error('useModelActions must be used within a ModelProvider');
   }
   return context;
 };
 
-export default ModelContext;
+/**
+ * Hook to access model state context (frequently updating state)
+ * Use this hook only in components that need to display progress
+ */
+export const useModelState = () => {
+  const context = useContext(ModelStateContext);
+  if (!context) {
+    throw new Error('useModelState must be used within a ModelProvider');
+  }
+  return context;
+};
+
+/**
+ * Legacy hook that combines both contexts (for backward compatibility)
+ * @deprecated Use useModelActions and useModelState separately for better performance
+ */
+export const useModel = () => {
+  const actions = useContext(ModelActionsContext);
+  const state = useContext(ModelStateContext);
+  if (!actions || !state) {
+    throw new Error('useModel must be used within a ModelProvider');
+  }
+  return { ...actions, ...state };
+};
+
+export default ModelActionsContext;

@@ -3,18 +3,16 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 /**
  * useBookGeneration Hook
  * Manages book generation lifecycle, outline parsing, and page state
- * 
+ *
  * @param {Object} options - Hook options
  * @param {Function} options.generateOutline - Function to generate outline from worker
  * @param {Function} options.startBookGeneration - Function to start generation in worker
- * @param {Function} options.resumeBookGeneration - Function to resume generation
  * @param {Function} options.cancelBookGeneration - Function to cancel generation
  * @returns {Object} Book generation state and handlers
  */
 export function useBookGeneration({
   generateOutline,
   startBookGeneration,
-  resumeBookGeneration,
   cancelBookGeneration,
 } = {}) {
   const [bookData, setBookData] = useState(null);
@@ -148,14 +146,8 @@ export function useBookGeneration({
       });
 
       // Step 3: Start generation in worker
+      // The worker will process the queue asynchronously - no need for resume call
       await startBookGeneration(settings, parsedOutline, numPages);
-
-      // Step 4: Resume generation after delay
-      setTimeout(async () => {
-        if (resumeBookGeneration) {
-          await resumeBookGeneration();
-        }
-      }, 500);
 
     } catch (err) {
       console.error('Generation failed:', err);
@@ -164,7 +156,7 @@ export function useBookGeneration({
       setIsGenerating(false);
       throw err;
     }
-  }, [generateOutline, startBookGeneration, resumeBookGeneration, parseOutline]);
+  }, [generateOutline, startBookGeneration, parseOutline]);
 
   /**
    * Cancel ongoing generation

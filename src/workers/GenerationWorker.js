@@ -13,9 +13,9 @@
 import { pipeline, env, AutoTokenizer } from '@huggingface/transformers';
 import { loadModel, generateImage, unloadModel, detectCapabilities } from 'web-txt2img';
 import { config } from '../config.js';
-import { generatePrompt, generateOutlinePrompt, generateQuipPrompt } from '../utils/promptEngine.js';
-import { WorkerRPC } from '../utils/workerRPC.js';
-import { cacheImage, getCachedImage } from '../utils/imageCache.js';
+import { generatePrompt, generateOutlinePrompt, generateQuipPrompt } from '../utils/promptEngine.ts';
+import { WorkerRPC } from '../utils/workerRPC.ts';
+import { cacheImage, getCachedImage } from '../utils/imageCache.ts';
 
 // Configure transformers.js environment
 env.allowLocalModels = config.transformers.allowLocalModels;
@@ -307,8 +307,8 @@ async function generateImageFromPrompt(prompt, options = {}) {
       const cachedBlob = await getCachedImage(cachePrompt);
       if (cachedBlob) {
         console.log('[ImageCache] Hit for prompt:', prompt.substring(0, 50));
-        const imageUrl = URL.createObjectURL(cachedBlob);
-        return { imageUrl, blob: cachedBlob, cached: true };
+        // Return only the blob - main thread will create the URL
+        return { blob: cachedBlob, cached: true };
       }
     } catch (err) {
       console.warn('[ImageCache] Failed to get cached image:', err);
@@ -359,8 +359,8 @@ async function generateImageFromPrompt(prompt, options = {}) {
         negativePrompt,
       });
 
-      const imageUrl = URL.createObjectURL(result.blob);
-      return { imageUrl, blob: result.blob, cached: false };
+      // Return only the blob - main thread will create the URL
+      return { blob: result.blob, cached: false };
     } else {
       throw new Error(result?.message || 'Generation failed');
     }
@@ -546,20 +546,11 @@ rpc.register('START_GENERATION', async (payload) => {
     pageOutline,
   }));
 
-  // Start processing - first page immediately
-  await processGenerationQueue();
-  
-  return { queued: generationQueue.length };
-});
+  // Start processing - queue is processed asynchronously and sequentially
+  // No need for artificial delays - the async/await pattern handles this naturally
+  processGenerationQueue();
 
-/**
- * Resume generation (for delayed continuation)
- */
-rpc.register('RESUME_GENERATION', async () => {
-  setTimeout(() => {
-    processGenerationQueue();
-  }, 500);
-  return { resumed: true };
+  return { queued: generationQueue.length };
 });
 
 /**

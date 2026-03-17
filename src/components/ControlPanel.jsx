@@ -1,12 +1,12 @@
 import React, { useEffect, useRef } from 'react';
-import { useModel, ModelStatus } from '../contexts/ModelContext';
+import { useModelState, ModelStatus } from '../contexts/ModelContext';
 import './ControlPanel.css';
 
 /**
  * Enhanced ControlPanel with model state validation and debounced live updates
  */
 const ControlPanel = ({ settings, setSettings, onGenerate, loading }) => {
-  const { textModel, imageModel, isWebGPUSupported } = useModel();
+  const { textModel, imageModel, isWebGPUSupported } = useModelState();
   const debounceRef = useRef(null);
   const hasGeneratedRef = useRef(false);
 
@@ -18,9 +18,6 @@ const ControlPanel = ({ settings, setSettings, onGenerate, loading }) => {
     }));
   };
 
-  /**
-   * Handle keyboard input for sliders
-   */
   const handleSliderKeyDown = (e, name, currentValue) => {
     const step = 0.1;
     let newValue = currentValue;

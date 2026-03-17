@@ -1,5 +1,5 @@
 import React from 'react';
-import { useModel, ModelStatus } from '../contexts/ModelContext';
+import { useModelActions, useModelState, ModelStatus } from '../contexts/ModelContext';
 import { Cpu, Zap, AlertCircle, CheckCircle, Loader2, MemoryStick, Gauge, ToggleLeft } from 'lucide-react';
 import './ModelStatusDashboard.css';
 
@@ -7,6 +7,9 @@ import './ModelStatusDashboard.css';
  * ModelStatusDashboard - Displays AI model status and WebGPU capabilities
  */
 const ModelStatusDashboard = ({ collapsed = false }) => {
+  const actions = useModelActions();
+  const state = useModelState();
+  
   const {
     textModel,
     qualityTextModel,
@@ -17,9 +20,9 @@ const ModelStatusDashboard = ({ collapsed = false }) => {
     speedMode,
     toggleSpeedMode,
     deviceResources,
-    fetchCacheStats,
-    clearImageCache,
-  } = useModel();
+  } = state;
+
+  const { fetchCacheStats, clearImageCache } = actions;
 
   const [cacheStats, setCacheStats] = React.useState({ imageCount: 0, estimatedSize: 'Unknown' });
 
