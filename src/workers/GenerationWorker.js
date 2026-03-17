@@ -307,8 +307,13 @@ async function generateImageFromPrompt(prompt, options = {}) {
       const cachedBlob = await getCachedImage(cachePrompt);
       if (cachedBlob) {
         console.log('[ImageCache] Hit for prompt:', prompt.substring(0, 50));
-        // Return only the blob - main thread will create the URL
-        return { blob: cachedBlob, cached: true };
+        // Convert blob to ArrayBuffer for transfer
+        const arrayBuffer = await cachedBlob.arrayBuffer();
+        return { 
+          blob: arrayBuffer, 
+          type: cachedBlob.type, 
+          cached: true 
+        };
       }
     } catch (err) {
       console.warn('[ImageCache] Failed to get cached image:', err);
@@ -359,8 +364,13 @@ async function generateImageFromPrompt(prompt, options = {}) {
         negativePrompt,
       });
 
-      // Return only the blob - main thread will create the URL
-      return { blob: result.blob, cached: false };
+      // Convert blob to ArrayBuffer for transfer to main thread
+      const arrayBuffer = await result.blob.arrayBuffer();
+      return { 
+        blob: arrayBuffer, 
+        type: result.blob.type, 
+        cached: false 
+      };
     } else {
       throw new Error(result?.message || 'Generation failed');
     }

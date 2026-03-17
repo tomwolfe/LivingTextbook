@@ -229,8 +229,7 @@ export const ModelProvider = ({ children }) => {
 
         case 'GENERATION_PROGRESS': {
           const { stage, status } = payload || {};
-          // Could be used for UI feedback during generation
-          console.log(`Generation progress: ${stage} - ${status}`);
+          // Silently handle generation progress - UI updates via model state
           break;
         }
 
@@ -457,13 +456,14 @@ export const ModelProvider = ({ children }) => {
         options: { negativePrompt, useCache: false }, // Cache already checked above
       });
 
-      // Worker now returns only the blob - create URL on main thread
+      // Worker returns ArrayBuffer - reconstruct blob on main thread
       if (result?.blob) {
-        const imageUrl = URL.createObjectURL(result.blob);
+        const blob = new Blob([result.blob], { type: result.type || 'image/png' });
+        const imageUrl = URL.createObjectURL(blob);
         blobUrlsRef.current.add(imageUrl);
 
         setImageModelState(prev => ({ ...prev, loading: false, status: ModelStatus.READY }));
-        return { imageUrl, blob: result.blob, cached: result.cached || false };
+        return { imageUrl, blob, cached: result.cached || false };
       } else {
         throw new Error('Image generation failed');
       }
