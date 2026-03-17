@@ -3,24 +3,17 @@ import jsPDF from 'jspdf';
 import './BookRenderer.css';
 
 /**
- * Convert image URL to base64 data URL
- * @param {string} url - Image URL (object URL or data URL)
+ * Convert blob to base64 data URL
+ * @param {Blob} blob - Image blob
  * @returns {Promise<string>} - Base64 data URL
  */
-const imageUrlToBase64 = async (url) => {
-  try {
-    const response = await fetch(url);
-    const blob = await response.blob();
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-  } catch (error) {
-    console.error('Failed to convert image to base64:', error);
-    return null;
-  }
+const blobToBase64 = (blob) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
 };
 
 /**
@@ -54,12 +47,13 @@ const BookRenderer = ({ bookData, loading }) => {
       doc.text(bookData.subject, margin, margin + 10);
 
       // Add image if available
-      if (bookData.image) {
-        const imageData = await imageUrlToBase64(bookData.image);
+      if (bookData.image?.blob) {
+        const imageData = await blobToBase64(bookData.image.blob);
         if (imageData) {
-          const imageHeight = 100; // Fixed height for the image
+          // Maintain 1:1 aspect ratio (sd-turbo generates 512x512 images)
+          const imageHeight = contentWidth;
           const imageY = margin + 20;
-          
+
           // Add image centered on the page
           doc.addImage(
             imageData,
@@ -135,8 +129,8 @@ const BookRenderer = ({ bookData, loading }) => {
     <div className="book-container">
       <div className="book-page">
         <div className="page-image">
-          {bookData.image ? (
-            <img src={bookData.image} alt={bookData.subject} />
+          {bookData.image?.imageUrl ? (
+            <img src={bookData.image.imageUrl} alt={bookData.subject} />
           ) : (
             <div className="image-placeholder">Visualizing...</div>
           )}

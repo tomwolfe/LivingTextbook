@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { pipeline, env, AutoTokenizer } from '@huggingface/transformers';
 import { loadModel, generateImage, unloadModel, detectCapabilities } from 'web-txt2img';
 import { config } from '../config';
@@ -320,7 +320,7 @@ export const ModelProvider = ({ children }) => {
       if (result?.ok && result?.blob) {
         const imageUrl = URL.createObjectURL(result.blob);
         setImageModelState(prev => ({ ...prev, loading: false, status: ModelStatus.READY }));
-        return imageUrl;
+        return { imageUrl, blob: result.blob };
       } else {
         throw new Error(result?.message || 'Generation failed');
       }
@@ -381,8 +381,8 @@ export const ModelProvider = ({ children }) => {
     return false;
   }, [initTextModel, initImageModel]);
 
-  // Context value
-  const contextValue = {
+  // Context value - memoized to prevent unnecessary re-renders
+  const contextValue = useMemo(() => ({
     // Text generation
     generateText,
     textModel: textModelState,
@@ -402,7 +402,19 @@ export const ModelProvider = ({ children }) => {
     // Capabilities
     webgpuCapabilities,
     isWebGPUSupported: webgpuCapabilities?.webgpu && webgpuCapabilities?.shaderF16,
-  };
+  }), [
+    generateText,
+    textModelState,
+    initTextModel,
+    unloadTextModel,
+    generateImageFromPrompt,
+    imageModelState,
+    initImageModel,
+    unloadImageModel,
+    unloadAllModels,
+    retryInit,
+    webgpuCapabilities,
+  ]);
 
   return <ModelContext.Provider value={contextValue}>{children}</ModelContext.Provider>;
 };
