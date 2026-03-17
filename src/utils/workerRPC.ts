@@ -208,7 +208,14 @@ export class WorkerRPC {
 
     try {
       const result = await handler(payload);
-      this.sendResponse(id, action, result, null, 'success');
+      
+      // Check if result contains an ArrayBuffer to transfer
+      let transfer: Transferable[] = [];
+      if (result && typeof result === 'object' && 'buffer' in result && result.buffer instanceof ArrayBuffer) {
+        transfer = [result.buffer];
+      }
+      
+      this.sendResponse(id, action, result, null, 'success', transfer);
     } catch (err) {
       console.error(`[Worker] Action '${action}' failed:`, err);
       this.sendResponse(id, action, null, (err as Error).message, 'error');
@@ -218,26 +225,39 @@ export class WorkerRPC {
   /**
    * Send response to main thread
    */
-  sendResponse(id: string, action: string, result: unknown, error: string | null, status: 'success' | 'error') {
-    self.postMessage({
+  sendResponse(id: string, action: string, result: unknown, error: string | null, status: 'success' | 'error', transfer?: Transferable[]) {
+    const message = {
       id,
       type: 'RPC_RESPONSE',
       action,
       result,
       error,
       status,
-    });
+    };
+    
+    if (transfer && transfer.length > 0) {
+      // For workers, postMessage accepts transfer as second parameter
+      (self as unknown as { postMessage: (msg: unknown, transfer: Transferable[]) => void }).postMessage(message, transfer);
+    } else {
+      self.postMessage(message);
+    }
   }
 
   /**
    * Send an event/message to main thread (not a response)
    */
-  sendEvent(type: string, payload: unknown) {
-    self.postMessage({
+  sendEvent(type: string, payload: unknown, transfer?: Transferable[]) {
+    const message = {
       type,
       payload,
       timestamp: Date.now(),
-    });
+    };
+    
+    if (transfer && transfer.length > 0) {
+      (self as unknown as { postMessage: (msg: unknown, transfer: Transferable[]) => void }).postMessage(message, transfer);
+    } else {
+      self.postMessage(message);
+    }
   }
 }
 

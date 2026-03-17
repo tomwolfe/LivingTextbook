@@ -1,24 +1,43 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, ChangeEvent, KeyboardEvent } from 'react';
 import { useModelState, ModelStatus } from '../contexts/ModelContext';
+import type { BookSettings } from '../types';
 import './ControlPanel.css';
+
+interface ControlPanelProps {
+  settings: BookSettings;
+  setSettings: (settings: BookSettings) => void;
+  onGenerate: () => void;
+  onCancel: () => void;
+  loading: boolean;
+}
 
 /**
  * Enhanced ControlPanel with model state validation and debounced live updates
  */
-const ControlPanel = ({ settings, setSettings, onGenerate, loading }) => {
+const ControlPanel: React.FC<ControlPanelProps> = ({ 
+  settings, 
+  setSettings, 
+  onGenerate, 
+  onCancel, 
+  loading 
+}) => {
   const { textModel, imageModel, isWebGPUSupported } = useModelState();
-  const debounceRef = useRef(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasGeneratedRef = useRef(false);
 
-  const handleChange = (e) => {
+  const handleChange = (e: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
-    setSettings(prev => ({
-      ...prev,
+    setSettings({
+      ...settings,
       [name]: name === 'level' ? value : parseFloat(value)
-    }));
+    });
   };
 
-  const handleSliderKeyDown = (e, name, currentValue) => {
+  const handleSliderKeyDown = (
+    e: KeyboardEvent<HTMLInputElement>, 
+    name: keyof BookSettings, 
+    currentValue: number
+  ) => {
     const step = 0.1;
     let newValue = currentValue;
 
@@ -45,10 +64,10 @@ const ControlPanel = ({ settings, setSettings, onGenerate, loading }) => {
         return;
     }
 
-    setSettings(prev => ({
-      ...prev,
+    setSettings({
+      ...settings,
       [name]: parseFloat(newValue.toFixed(1))
-    }));
+    });
   };
 
   // Debounced live update for text regeneration (not images to save GPU)
@@ -93,7 +112,7 @@ const ControlPanel = ({ settings, setSettings, onGenerate, loading }) => {
   // - WebGPU is required but not available (and image model isn't already loaded)
   const isGenerationBlocked = isModelsLoading || hasModelError || isWebGPURequiredButMissing;
 
-  const getDisabledReason = () => {
+  const getDisabledReason = (): string | null => {
     if (isModelsLoading) return 'Models are loading...';
     if (textModel.status === ModelStatus.ERROR) return 'Text model error';
     if (imageModel.status === ModelStatus.ERROR) return 'Image model error';
@@ -116,7 +135,7 @@ const ControlPanel = ({ settings, setSettings, onGenerate, loading }) => {
           name="subject"
           placeholder="e.g., How black holes work"
           value={settings.subject}
-          onChange={(e) => setSettings(prev => ({ ...prev, subject: e.target.value }))}
+          onChange={(e) => setSettings({ ...settings, subject: e.target.value })}
           className="subject-input"
         />
       </div>
@@ -202,14 +221,25 @@ const ControlPanel = ({ settings, setSettings, onGenerate, loading }) => {
         </div>
       )}
 
-      <button
-        onClick={onGenerate}
-        disabled={isDisabled}
-        className="generate-btn"
-        title={disabledReason}
-      >
-        {loading ? "Generating..." : disabledReason ? `${disabledReason}` : "Generate Book"}
-      </button>
+      <div className="control-panel-actions">
+        {loading && (
+          <button
+            onClick={onCancel}
+            className="cancel-btn"
+            aria-label="Cancel generation"
+          >
+            ❌ Cancel
+          </button>
+        )}
+        <button
+          onClick={onGenerate}
+          disabled={isDisabled}
+          className="generate-btn"
+          title={disabledReason ?? undefined}
+        >
+          {loading ? "Generating..." : disabledReason ? `${disabledReason}` : "Generate Book"}
+        </button>
+      </div>
     </div>
   );
 };

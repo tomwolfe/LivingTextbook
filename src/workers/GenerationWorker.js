@@ -1,12 +1,12 @@
 /**
  * GenerationWorker - Handles ALL AI model operations off the main thread
- * 
- * This worker now contains the complete AI inference logic:
+ *
+ * This worker contains the complete AI inference logic:
  * - Text generation (SmolLM2, Qwen2.5)
  * - Image generation (SD-Turbo)
  * - Model lifecycle management
  * - Book generation orchestration
- * 
+ *
  * Communication uses UUID-based RPC to prevent race conditions.
  */
 
@@ -15,12 +15,11 @@ import { loadModel, generateImage, unloadModel, detectCapabilities } from 'web-t
 import { config } from '../config.js';
 import { generatePrompt, generateOutlinePrompt, generateQuipPrompt } from '../utils/promptEngine.ts';
 import { WorkerRPC } from '../utils/workerRPC.ts';
-import { cacheImage, getCachedImage } from '../utils/imageCache.ts';
+import { cacheImage } from '../utils/imageCache.ts';
 
 // Configure transformers.js environment
 env.allowLocalModels = config.transformers.allowLocalModels;
 env.useBrowserCache = config.transformers.useBrowserCache;
-env.logLevel = config.transformers.logLevel;
 
 // Initialize RPC handler
 const rpc = new WorkerRPC();
@@ -40,6 +39,9 @@ let isGenerating = false;
 let currentSettings = null;
 let currentNumPages = 0;
 let generatedPages = [];
+
+// AbortController for cancellation
+let abortController = null;
 
 /**
  * Initialize text generation model (fast or quality)
@@ -261,17 +263,27 @@ async function generateText(prompt, options = {}) {
       { role: 'user', content: prompt },
     ];
 
+    // Check for abort signal
+    if (abortController?.signal.aborted) {
+      throw new Error('Generation cancelled');
+    }
+
     const output = await generator(messages, {
       max_new_tokens: maxTokens || config.textGen.maxNewTokens,
       temperature: temperature || config.textGen.temperature,
       do_sample: options.doSample ?? config.textGen.doSample,
+      // Pass abort signal if supported by transformers.js
+      signal: abortController?.signal,
     });
 
     // Extract content from chat format
     const content = output[0]?.generated_text?.[output[0].generated_text.length - 1]?.content;
-    
+
     return content || 'No content generated.';
   } catch (err) {
+    if (err.name === 'AbortError' || err.message.includes('cancelled')) {
+      throw new Error('Generation cancelled');
+    }
     console.error('Text generation error:', err);
     throw err;
   }
@@ -317,6 +329,11 @@ async function generateImageFromPrompt(prompt, options = {}) {
   }
 
   try {
+    // Check for abort before starting generation
+    if (abortController?.signal.aborted) {
+      throw new Error('Generation cancelled');
+    }
+
     rpc.sendEvent('GENERATION_PROGRESS', {
       stage: 'image',
       status: 'Generating image...',
@@ -336,6 +353,11 @@ async function generateImageFromPrompt(prompt, options = {}) {
 
     const result = await generateImage(generateImageParams);
 
+    // Check for abort after generation completes
+    if (abortController?.signal.aborted) {
+      throw new Error('Generation cancelled');
+    }
+
     if (result?.ok && result?.blob) {
       // Cache the generated image for future use
       const cachePrompt = negativePrompt ? `${prompt}|${negativePrompt}` : prompt;
@@ -346,20 +368,22 @@ async function generateImageFromPrompt(prompt, options = {}) {
         negativePrompt,
       });
 
-      // Convert blob to ArrayBuffer for transfer to main thread
+      // Convert blob to ArrayBuffer for zero-copy transfer to main thread
       const arrayBuffer = await result.blob.arrayBuffer();
-      // Recreate blob from ArrayBuffer for the main thread
-      const transferredBlob = new Blob([arrayBuffer], { type: result.blob.type });
-      const imageUrl = URL.createObjectURL(transferredBlob);
+
+      // Return only the ArrayBuffer and metadata - main thread will create the Blob
       return {
-        blob: transferredBlob,
-        imageUrl,
+        buffer: arrayBuffer,
+        type: result.blob.type || 'image/png',
         cached: false
       };
     } else {
       throw new Error(result?.message || 'Generation failed');
     }
   } catch (err) {
+    if (err.message.includes('cancelled')) {
+      throw new Error('Generation cancelled');
+    }
     console.error('Image generation error:', err);
     throw err;
   }
@@ -386,6 +410,11 @@ function generatePagePrompts(pageNum, pageOutline) {
  * Generate a single page with text, image, and quip
  */
 async function generatePage(pageNum, pageOutline) {
+  // Check for abort before starting page generation
+  if (abortController?.signal.aborted) {
+    throw new Error('Generation cancelled');
+  }
+
   // Step 1: Get prompts
   const { textPrompt, imagePrompt } = generatePagePrompts(pageNum, pageOutline);
 
@@ -397,6 +426,11 @@ async function generatePage(pageNum, pageOutline) {
     generateText(enhancedTextPrompt, { complexity: currentSettings.complexity }),
     generateImageFromPrompt(imagePrompt.positive, { negativePrompt: imagePrompt.negative }),
   ]);
+
+  // Check for abort after parallel generation
+  if (abortController?.signal.aborted) {
+    throw new Error('Generation cancelled');
+  }
 
   // Step 3: Generate quip after content is ready
   let quip = null;
@@ -426,6 +460,14 @@ async function processGenerationQueue() {
   isGenerating = true;
 
   while (generationQueue.length > 0) {
+    // Check for abort before processing each page
+    if (abortController?.signal.aborted) {
+      generationQueue = [];
+      isGenerating = false;
+      rpc.sendEvent('GENERATION_CANCELLED', {});
+      return;
+    }
+
     const { pageNum, pageOutline } = generationQueue.shift();
 
     // Notify main thread that we're starting this page
@@ -440,10 +482,20 @@ async function processGenerationQueue() {
         pageData,
       });
     } catch (err) {
+      const errorMessage = err.message || 'Generation failed';
+      
+      // Check if this was a cancellation
+      if (errorMessage.includes('cancelled')) {
+        generationQueue = [];
+        isGenerating = false;
+        rpc.sendEvent('GENERATION_CANCELLED', {});
+        return;
+      }
+      
       console.error(`Worker: Failed to generate page ${pageNum}:`, err);
       rpc.sendEvent('PAGE_ERROR', {
         pageNum,
-        error: err.message || 'Generation failed',
+        error: errorMessage,
       });
     }
   }
@@ -491,7 +543,10 @@ rpc.register('GENERATE_IMAGE', async (payload) => {
   if (!prompt) {
     throw new Error('Prompt is required');
   }
-  return await generateImageFromPrompt(prompt, options);
+  const result = await generateImageFromPrompt(prompt, options);
+  
+  // Return the result with buffer for transfer
+  return result;
 });
 
 /**
@@ -530,10 +585,11 @@ rpc.register('START_GENERATION', async (payload) => {
   currentSettings = settings;
   currentNumPages = numPages;
 
-  // Reset state
+  // Reset state and create new AbortController for this generation session
   generationQueue = [];
   isGenerating = false;
   generatedPages = [];
+  abortController = new AbortController();
 
   // Queue all pages for generation
   generationQueue = outline.map((pageOutline, idx) => ({
@@ -552,8 +608,19 @@ rpc.register('START_GENERATION', async (payload) => {
  * Cancel generation
  */
 rpc.register('CANCEL_GENERATION', async () => {
+  // Abort the current generation
+  if (abortController) {
+    abortController.abort();
+    // Create a new AbortController for future generations
+    abortController = new AbortController();
+  }
+  
   generationQueue = [];
   isGenerating = false;
+  
+  // Notify main thread that generation was cancelled
+  rpc.sendEvent('GENERATION_CANCELLED', {});
+  
   return { cancelled: true };
 });
 

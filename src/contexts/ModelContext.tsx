@@ -1,9 +1,23 @@
-import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from 'react';
+/* eslint-disable @typescript-eslint/no-unused-vars */
+import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, ReactNode } from 'react';
 import { config } from '../config';
 import { detectDeviceResources, getRecommendedSettings } from '../utils/resourceDetector.ts';
 import { saveBook, getBook, getAllBooks, deleteBook, getCacheStats, clearImageCache, getCachedImage } from '../utils/imageCache.ts';
 import { MainThreadRPC } from '../utils/workerRPC.ts';
-import { assertStorageAvailability, MODEL_SIZES } from '../utils/storageQuota';
+import { assertStorageAvailability } from '../utils/storageQuota';
+import type { 
+  ModelState, 
+  WebGPUCapabilities, 
+  DeviceResources, 
+  GenerationSettings,
+  BookSettings,
+  OutlineItem,
+  Book,
+  ImageResult,
+  ImageGenerationOptions,
+  TextGenerationOptions,
+  ModelStatusType
+} from '../types';
 
 /**
  * Model Status Enum
@@ -14,7 +28,7 @@ export const ModelStatus = {
   READY: 'Ready',
   ERROR: 'Error',
   UNLOADED: 'Unloaded',
-};
+} as const;
 
 /**
  * Model Type Enum
@@ -22,12 +36,12 @@ export const ModelStatus = {
 export const ModelType = {
   TEXT: 'text',
   IMAGE: 'image',
-};
+} as const;
 
 /**
  * Initial state for a model
  */
-const createInitialModelState = () => ({
+const createInitialModelState = (): ModelState => ({
   status: ModelStatus.IDLE,
   loading: false,
   progress: 0,
@@ -40,45 +54,91 @@ const createInitialModelState = () => ({
  * Model Actions Context - provides stable async functions
  * This context rarely changes, so consumers won't re-render on progress ticks
  */
-export const ModelActionsContext = createContext(null);
+export const ModelActionsContext = createContext<null | {
+  generateText: (prompt: string, options?: TextGenerationOptions) => Promise<string | null>;
+  generateQuip: (content: string) => Promise<string | null>;
+  generateOutline: (subject: string, settings: BookSettings, numPages: number) => Promise<string>;
+  initTextModel: (modelType?: 'fast' | 'quality') => Promise<boolean>;
+  unloadTextModel: () => Promise<void>;
+  generateImage: (prompt: string, options?: ImageGenerationOptions) => Promise<ImageResult | null>;
+  initImageModel: () => Promise<boolean>;
+  unloadImageModel: () => Promise<void>;
+  startBookGeneration: (settings: BookSettings, outline: OutlineItem[], numPages: number) => Promise<void>;
+  cancelBookGeneration: () => Promise<void>;
+  unloadAllModels: () => Promise<void>;
+  retryInit: (modelType: 'text' | 'image') => Promise<boolean>;
+  getModelStatus: () => Promise<Record<string, string> | null>;
+  toggleSpeedMode: (enabled: boolean) => void;
+  getGenerationSettings: () => GenerationSettings;
+  fetchCacheStats: () => Promise<{ count: number; sizeBytes: number; sizeFormatted: string }>;
+  clearImageCache: () => Promise<void>;
+  saveBookToDB: (book: Book) => Promise<string | null>;
+  getSavedBook: (bookId: string) => Promise<Book | null>;
+  getSavedBooks: () => Promise<Book[]>;
+  deleteSavedBook: (bookId: string) => Promise<boolean>;
+}>(null);
 
 /**
  * Model State Context - provides frequently updating state
  * Only components that need to display progress should consume this
  */
-export const ModelStateContext = createContext(null);
+export const ModelStateContext = createContext<null | {
+  textModel: ModelState;
+  qualityTextModel: ModelState;
+  imageModel: ModelState;
+  activeTextModel: 'fast' | 'quality';
+  speedMode: boolean;
+  deviceResources: DeviceResources | null;
+  webgpuCapabilities: WebGPUCapabilities | null;
+  isWebGPUSupported: boolean;
+  storageStatus: {
+    available: boolean;
+    quota: number;
+    usage: number;
+    usageFormatted: string;
+    quotaFormatted: string;
+    percentUsed: number;
+  } | null;
+}>(null);
 
 /**
  * Provider component that manages AI model lifecycle via worker
  */
-export const ModelProvider = ({ children }) => {
+export const ModelProvider = ({ children }: { children: ReactNode }) => {
   // Text generation model state (fast model - SmolLM2)
-  const [textModelState, setTextModelState] = useState(createInitialModelState());
+  const [textModelState, setTextModelState] = useState<ModelState>(createInitialModelState());
 
   // Quality text generation model state (Qwen2.5)
-  const [qualityTextModelState, setQualityTextModelState] = useState(createInitialModelState());
+  const [qualityTextModelState, setQualityTextModelState] = useState<ModelState>(createInitialModelState());
 
   // Track which model is currently active
-  const [activeTextModel, setActiveTextModel] = useState('fast'); // 'fast' or 'quality'
+  const [activeTextModel, setActiveTextModel] = useState<'fast' | 'quality'>('fast');
 
   // Image generation model state
-  const [imageModelState, setImageModelState] = useState(createInitialModelState());
+  const [imageModelState, setImageModelState] = useState<ModelState>(createInitialModelState());
 
   // WebGPU capability state
-  const [webgpuCapabilities, setWebgpuCapabilities] = useState(null);
+  const [webgpuCapabilities, setWebgpuCapabilities] = useState<WebGPUCapabilities | null>(null);
 
   // Device resource state for Speed Mode
-  const [deviceResources, setDeviceResources] = useState(null);
+  const [deviceResources, setDeviceResources] = useState<DeviceResources | null>(null);
   const [speedMode, setSpeedMode] = useState(false);
 
   // Storage quota state
-  const [storageStatus, setStorageStatus] = useState(null);
+  const [storageStatus, setStorageStatus] = useState<{
+    available: boolean;
+    quota: number;
+    usage: number;
+    usageFormatted: string;
+    quotaFormatted: string;
+    percentUsed: number;
+  } | null>(null);
 
   // Worker and RPC
-  const workerRef = useRef(null);
-  const rpcRef = useRef(null);
+  const workerRef = useRef<Worker | null>(null);
+  const rpcRef = useRef<MainThreadRPC | null>(null);
   // Track blob URLs to prevent memory leaks
-  const blobUrlsRef = useRef(new Set());
+  const blobUrlsRef = useRef<Set<string>>(new Set());
 
   /**
    * Detect WebGPU capabilities and device resources on mount
@@ -126,7 +186,15 @@ export const ModelProvider = ({ children }) => {
       try {
         const { getStorageStatus } = await import('../utils/storageQuota');
         const status = await getStorageStatus();
-        setStorageStatus(status);
+        // Map the storage status to our local state type
+        setStorageStatus({
+          available: status.status !== 'critical',
+          quota: status.quota.quota,
+          usage: status.quota.usage,
+          usageFormatted: status.quota.usageFormatted,
+          quotaFormatted: status.quota.quotaFormatted,
+          percentUsed: status.quota.percentUsed,
+        });
       } catch (err) {
         console.warn('Failed to check storage:', err);
       }
@@ -150,7 +218,7 @@ export const ModelProvider = ({ children }) => {
 
     // Set up handler for worker-initiated events
     rpcRef.current.setWorkerMessageHandler((data) => {
-      const { type, payload } = data;
+      const { type, payload } = data as { type: string; payload?: Record<string, unknown> };
 
       switch (type) {
         case 'MODEL_PROGRESS': {
@@ -158,16 +226,16 @@ export const ModelProvider = ({ children }) => {
           if (modelType === 'fast' || modelType === 'quality') {
             setQualityTextModelState(prev => ({
               ...prev,
-              progress,
-              status: status || prev.status,
-              loading: progress < 100,
+              progress: progress as number || 0,
+              status: (status as ModelStatusType) || prev.status,
+              loading: (progress as number || 0) < 100,
             }));
           } else if (modelType === 'image') {
             setImageModelState(prev => ({
               ...prev,
-              progress,
-              status: status || prev.status,
-              loading: progress < 100,
+              progress: progress as number || 0,
+              status: (status as ModelStatusType) || prev.status,
+              loading: (progress as number || 0) < 100,
             }));
           }
           break;
@@ -181,17 +249,17 @@ export const ModelProvider = ({ children }) => {
               status: ModelStatus.READY,
               loading: false,
               progress: 100,
-              device: device || 'WebGPU',
-              modelName: modelName || prev.modelName,
+              device: device as string || 'WebGPU',
+              modelName: modelName as string || prev.modelName,
             }));
-            setActiveTextModel(modelType);
+            setActiveTextModel(modelType as 'fast' | 'quality');
           } else if (modelType === 'image') {
             setImageModelState(prev => ({
               ...prev,
               status: ModelStatus.READY,
               loading: false,
               progress: 100,
-              device: device || 'WebGPU',
+              device: device as string || 'WebGPU',
             }));
           }
           break;
@@ -204,14 +272,14 @@ export const ModelProvider = ({ children }) => {
               ...prev,
               status: ModelStatus.ERROR,
               loading: false,
-              error: error || 'Model load failed',
+              error: error as string || 'Model load failed',
             }));
           } else if (modelType === 'image') {
             setImageModelState(prev => ({
               ...prev,
               status: ModelStatus.ERROR,
               loading: false,
-              error: error || 'Model load failed',
+              error: error as string || 'Model load failed',
             }));
           }
           break;
@@ -228,7 +296,6 @@ export const ModelProvider = ({ children }) => {
         }
 
         case 'GENERATION_PROGRESS': {
-          const { stage, status } = payload || {};
           // Silently handle generation progress - UI updates via model state
           break;
         }
@@ -272,7 +339,7 @@ export const ModelProvider = ({ children }) => {
   /**
    * Initialize text model via worker
    */
-  const initTextModel = useCallback(async (modelType = 'fast') => {
+  const initTextModel = useCallback(async (modelType: 'fast' | 'quality' = 'fast'): Promise<boolean> => {
     if (!rpcRef.current) {
       throw new Error('Worker not initialized');
     }
@@ -290,7 +357,7 @@ export const ModelProvider = ({ children }) => {
         ...prev,
         status: ModelStatus.ERROR,
         loading: false,
-        error: `Insufficient storage: ${err.message}`,
+        error: `Insufficient storage: ${(err as Error).message}`,
       }));
       return false;
     }
@@ -303,7 +370,7 @@ export const ModelProvider = ({ children }) => {
         modelTypes: [modelType],
       });
 
-      return result[modelType]?.success || false;
+      return (result as Record<string, { success?: boolean }>)?.[modelType]?.success || false;
     } catch (err) {
       console.error('Failed to initialize text model:', err);
       const setState = isQuality ? setQualityTextModelState : setTextModelState;
@@ -311,7 +378,7 @@ export const ModelProvider = ({ children }) => {
         ...prev,
         status: ModelStatus.ERROR,
         loading: false,
-        error: err.message || 'Failed to load text model',
+        error: (err as Error).message || 'Failed to load text model',
       }));
       return false;
     }
@@ -320,7 +387,7 @@ export const ModelProvider = ({ children }) => {
   /**
    * Initialize image model via worker
    */
-  const initImageModel = useCallback(async () => {
+  const initImageModel = useCallback(async (): Promise<boolean> => {
     if (!rpcRef.current) {
       throw new Error('Worker not initialized');
     }
@@ -334,7 +401,7 @@ export const ModelProvider = ({ children }) => {
         ...prev,
         status: ModelStatus.ERROR,
         loading: false,
-        error: `Insufficient storage: ${err.message}`,
+        error: `Insufficient storage: ${(err as Error).message}`,
       }));
       return false;
     }
@@ -345,14 +412,14 @@ export const ModelProvider = ({ children }) => {
       const result = await rpcRef.current.send('INIT_MODELS', {
         modelTypes: ['image'],
       });
-      return result.image?.success || false;
+      return (result as Record<string, { success?: boolean }>)?.image?.success || false;
     } catch (err) {
       console.error('Failed to initialize image model:', err);
       setImageModelState(prev => ({
         ...prev,
         status: ModelStatus.ERROR,
         loading: false,
-        error: err.message || 'Failed to load image model',
+        error: (err as Error).message || 'Failed to load image model',
       }));
       return false;
     }
@@ -361,17 +428,17 @@ export const ModelProvider = ({ children }) => {
   /**
    * Generate text from a prompt via worker
    */
-  const generateText = useCallback(async (prompt, options = {}) => {
+  const generateText = useCallback(async (prompt: string, options: TextGenerationOptions = {}): Promise<string | null> => {
     if (!rpcRef.current) {
       throw new Error('Worker not initialized');
     }
 
     const { complexity, skipStatus, ...generationOptions } = options;
-    const isQuality = complexity >= config.textGen.complexityThreshold;
+    const isQuality = complexity !== undefined && complexity >= config.textGen.complexityThreshold;
 
     if (!skipStatus) {
       const setState = isQuality ? setQualityTextModelState : setTextModelState;
-      setState(prev => ({ ...prev, loading: true, status: 'Generating Content...' }));
+      setState(prev => ({ ...prev, loading: true, status: 'Generating Content...' as ModelStatusType }));
     }
 
     try {
@@ -388,7 +455,7 @@ export const ModelProvider = ({ children }) => {
         setState(prev => ({ ...prev, loading: false, status: ModelStatus.READY }));
       }
 
-      return result;
+      return result as string;
     } catch (err) {
       console.error('Text generation error:', err);
       if (!skipStatus) {
@@ -397,7 +464,7 @@ export const ModelProvider = ({ children }) => {
           ...prev,
           loading: false,
           status: ModelStatus.ERROR,
-          error: err.message || 'Generation failed',
+          error: (err as Error).message || 'Generation failed',
         }));
       }
       return null;
@@ -407,7 +474,7 @@ export const ModelProvider = ({ children }) => {
   /**
    * Generate a witty quip via worker
    */
-  const generateQuip = useCallback(async (content) => {
+  const generateQuip = useCallback(async (content: string): Promise<string | null> => {
     try {
       const quip = await generateText(content, {
         systemPrompt: 'You are Logic the Lemur, a sassy, playful character who breaks the fourth wall.',
@@ -425,7 +492,7 @@ export const ModelProvider = ({ children }) => {
   /**
    * Generate image from a prompt via worker
    */
-  const generateImageFromPrompt = useCallback(async (prompt, options = {}) => {
+  const generateImageFromPrompt = useCallback(async (prompt: string, options: ImageGenerationOptions = {}): Promise<ImageResult | null> => {
     if (!rpcRef.current) {
       throw new Error('Worker not initialized');
     }
@@ -448,7 +515,7 @@ export const ModelProvider = ({ children }) => {
       }
     }
 
-    setImageModelState(prev => ({ ...prev, loading: true, status: 'Generating Image...' }));
+    setImageModelState(prev => ({ ...prev, loading: true, status: 'Generating Image...' as ModelStatusType }));
 
     try {
       const result = await rpcRef.current.send('GENERATE_IMAGE', {
@@ -456,14 +523,15 @@ export const ModelProvider = ({ children }) => {
         options: { negativePrompt, useCache: false }, // Cache already checked above
       });
 
-      // Worker returns ArrayBuffer - reconstruct blob on main thread
-      if (result?.blob) {
-        const blob = new Blob([result.blob], { type: result.type || 'image/png' });
+      // Worker returns ArrayBuffer via zero-copy transfer - reconstruct blob on main thread
+      const resultTyped = result as { buffer?: ArrayBuffer; type?: string; cached?: boolean } | null;
+      if (resultTyped?.buffer) {
+        const blob = new Blob([resultTyped.buffer], { type: resultTyped.type || 'image/png' });
         const imageUrl = URL.createObjectURL(blob);
         blobUrlsRef.current.add(imageUrl);
 
         setImageModelState(prev => ({ ...prev, loading: false, status: ModelStatus.READY }));
-        return { imageUrl, blob, cached: result.cached || false };
+        return { imageUrl, blob, cached: resultTyped.cached || false };
       } else {
         throw new Error('Image generation failed');
       }
@@ -473,7 +541,7 @@ export const ModelProvider = ({ children }) => {
         ...prev,
         loading: false,
         status: ModelStatus.ERROR,
-        error: err.message || 'Image generation failed',
+        error: (err as Error).message || 'Image generation failed',
       }));
       return null;
     }
@@ -482,7 +550,7 @@ export const ModelProvider = ({ children }) => {
   /**
    * Generate outline via worker
    */
-  const generateOutline = useCallback(async (subject, settings, numPages) => {
+  const generateOutline = useCallback(async (subject: string, settings: BookSettings, numPages: number): Promise<string> => {
     if (!rpcRef.current) {
       throw new Error('Worker not initialized');
     }
@@ -493,7 +561,7 @@ export const ModelProvider = ({ children }) => {
         settings,
         numPages,
       });
-      return result;
+      return result as string;
     } catch (err) {
       console.error('Outline generation error:', err);
       throw err;
@@ -503,18 +571,27 @@ export const ModelProvider = ({ children }) => {
   /**
    * Start book generation via worker
    */
-  const startBookGeneration = useCallback(async (settings, outline, numPages) => {
+  const startBookGeneration = useCallback(async (settings: BookSettings, outline: OutlineItem[], numPages: number): Promise<void> => {
     if (!rpcRef.current) {
       throw new Error('Worker not initialized');
     }
 
+    // Revoke all existing blob URLs to prevent memory leaks when starting a new book
+    blobUrlsRef.current.forEach(url => {
+      try {
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.warn('Failed to revoke blob URL:', err);
+      }
+    });
+    blobUrlsRef.current.clear();
+
     try {
-      const result = await rpcRef.current.send('START_GENERATION', {
+      await rpcRef.current.send('START_GENERATION', {
         settings,
         outline,
         numPages,
       });
-      return result;
     } catch (err) {
       console.error('Failed to start book generation:', err);
       throw err;
@@ -524,13 +601,13 @@ export const ModelProvider = ({ children }) => {
   /**
    * Cancel book generation via worker
    */
-  const cancelBookGeneration = useCallback(async () => {
+  const cancelBookGeneration = useCallback(async (): Promise<void> => {
     if (!rpcRef.current) {
       throw new Error('Worker not initialized');
     }
 
     try {
-      await rpcRef.current.send('CANCEL_GENERATION');
+      await rpcRef.current.send('CANCEL_GENERATION', {});
     } catch (err) {
       console.error('Failed to cancel generation:', err);
       throw err;
@@ -540,7 +617,7 @@ export const ModelProvider = ({ children }) => {
   /**
    * Unload text models via worker
    */
-  const unloadTextModel = useCallback(async () => {
+  const unloadTextModel = useCallback(async (): Promise<void> => {
     if (!rpcRef.current) return;
 
     try {
@@ -558,7 +635,7 @@ export const ModelProvider = ({ children }) => {
   /**
    * Unload image model via worker
    */
-  const unloadImageModel = useCallback(async () => {
+  const unloadImageModel = useCallback(async (): Promise<void> => {
     if (!rpcRef.current) return;
 
     try {
@@ -574,7 +651,7 @@ export const ModelProvider = ({ children }) => {
   /**
    * Unload all models via worker
    */
-  const unloadAllModels = useCallback(async () => {
+  const unloadAllModels = useCallback(async (): Promise<void> => {
     if (!rpcRef.current) return;
 
     try {
@@ -593,13 +670,13 @@ export const ModelProvider = ({ children }) => {
   /**
    * Get model status via worker
    */
-  const getModelStatus = useCallback(async () => {
+  const getModelStatus = useCallback(async (): Promise<Record<string, string> | null> => {
     if (!rpcRef.current) {
       return null;
     }
 
     try {
-      return await rpcRef.current.send('GET_MODEL_STATUS');
+      return await rpcRef.current.send('GET_MODEL_STATUS', {}) as Record<string, string>;
     } catch (err) {
       console.error('Failed to get model status:', err);
       return null;
@@ -609,11 +686,11 @@ export const ModelProvider = ({ children }) => {
   /**
    * Retry model initialization after error
    */
-  const retryInit = useCallback(async (modelType) => {
-    if (modelType === ModelType.TEXT) {
+  const retryInit = useCallback(async (modelType: 'text' | 'image'): Promise<boolean> => {
+    if (modelType === 'text') {
       setTextModelState(prev => ({ ...prev, error: null }));
       return await initTextModel();
-    } else if (modelType === ModelType.IMAGE) {
+    } else if (modelType === 'image') {
       setImageModelState(prev => ({ ...prev, error: null }));
       return await initImageModel();
     }
@@ -623,14 +700,14 @@ export const ModelProvider = ({ children }) => {
   /**
    * Toggle Speed Mode on/off
    */
-  const toggleSpeedMode = useCallback((enabled) => {
+  const toggleSpeedMode = useCallback((enabled: boolean) => {
     setSpeedMode(enabled);
   }, []);
 
   /**
    * Get recommended generation settings based on device resources and speed mode
    */
-  const getGenerationSettings = useCallback(() => {
+  const getGenerationSettings = useCallback((): GenerationSettings => {
     if (!deviceResources) {
       return {
         mode: 'quality',
@@ -686,7 +763,7 @@ export const ModelProvider = ({ children }) => {
 
     // Cache management
     fetchCacheStats: getCacheStats,
-    clearImageCache,
+    clearImageCache: async () => { await clearImageCache(); },
 
     // Book management
     saveBookToDB: saveBook,
@@ -726,7 +803,7 @@ export const ModelProvider = ({ children }) => {
 
     // Capabilities
     webgpuCapabilities,
-    isWebGPUSupported: webgpuCapabilities?.webgpu && webgpuCapabilities?.shaderF16,
+    isWebGPUSupported: !!(webgpuCapabilities?.webgpu && webgpuCapabilities?.shaderF16),
 
     // Storage
     storageStatus,
