@@ -10,7 +10,7 @@
  * Communication uses UUID-based RPC to prevent race conditions.
  */
 
-import { pipeline, env, AutoTokenizer, type TextGenerationPipeline } from '@huggingface/transformers';
+import { pipeline, env, AutoTokenizer } from '@huggingface/transformers';
 import { loadModel, generateImage, unloadModel, detectCapabilities } from 'web-txt2img';
 import type { LoadResult, GenerateResult } from 'web-txt2img';
 import { config } from '../config';
@@ -33,10 +33,10 @@ env.useBrowserCache = config.transformers.useBrowserCache;
 // Initialize RPC handler
 const rpc = new WorkerRPC();
 
-// Model state
+// Model state - use unknown for pipeline to avoid type compatibility issues with transformers.js v3
 interface ModelState {
-  textGenerator: TextGenerationPipeline | null;
-  qualityTextGenerator: TextGenerationPipeline | null;
+  textGenerator: unknown | null;
+  qualityTextGenerator: unknown | null;
   imageModelLoaded: boolean;
   imageModelLoadPromise: Promise<LoadResult | null> | null;
   activeTextModel: 'fast' | 'quality';
@@ -110,9 +110,9 @@ async function initTextModel(modelType: 'fast' | 'quality' = 'fast'): Promise<{ 
       );
 
       if (isQuality) {
-        modelState.qualityTextGenerator = generator as TextGenerationPipeline;
+        modelState.qualityTextGenerator = generator;
       } else {
-        modelState.textGenerator = generator as TextGenerationPipeline;
+        modelState.textGenerator = generator;
       }
 
       modelState.activeTextModel = modelType;
@@ -137,9 +137,9 @@ async function initTextModel(modelType: 'fast' | 'quality' = 'fast'): Promise<{ 
       );
 
       if (isQuality) {
-        modelState.qualityTextGenerator = generator as TextGenerationPipeline;
+        modelState.qualityTextGenerator = generator;
       } else {
-        modelState.textGenerator = generator as TextGenerationPipeline;
+        modelState.textGenerator = generator;
       }
 
       modelState.activeTextModel = modelType;
@@ -256,6 +256,8 @@ async function initImageModel(): Promise<{ success: boolean; error?: string }> {
 /**
  * Generate text from a prompt
  */
+let webgpuFailed = false; // Track if WebGPU execution has failed
+
 async function generateText(
   prompt: string,
   options: TextGenerationOptions = {}
@@ -295,22 +297,92 @@ async function generateText(
       throw new Error('Generation cancelled');
     }
 
-    const output = await generator(messages, {
+    // Call generator directly - casting only for TypeScript
+    const output = await (generator as (
+      messages: Array<{ role: string; content: string }>,
+      config: Record<string, unknown>
+    ) => Promise<unknown>)(messages, {
       max_new_tokens: maxTokens || config.textGen.maxNewTokens,
       temperature: temperature || config.textGen.temperature,
       do_sample: options.doSample ?? config.textGen.doSample,
     });
 
     // Extract content from chat format
-    // Handle both TextGenerationOutput and TextGenerationSingle types
-    const outputItem = output[0] as { generated_text?: Array<{ content: string }> } | undefined;
-    const generatedText = outputItem?.generated_text;
-    const content = generatedText && generatedText.length > 0
-      ? generatedText[generatedText.length - 1].content
-      : 'No content generated.';
+    // Output can be array or single object depending on transformers.js version
+    const outputArray = Array.isArray(output) ? output : [output];
+    const firstOutput = outputArray[0] as Record<string, unknown>;
+    const generatedText = firstOutput?.generated_text;
+    
+    let content = 'No content generated.';
+    if (generatedText) {
+      const textArray = Array.isArray(generatedText) ? generatedText : [generatedText];
+      const lastMessage = textArray[textArray.length - 1] as Record<string, unknown>;
+      if (lastMessage?.content) {
+        content = lastMessage.content as string;
+      }
+    }
 
     return content;
   } catch (err) {
+    const errorMsg = (err as Error).message || String(err);
+    const errorCode = (err as Error).name;
+    
+    // Check if this is a WebGPU error (numeric error codes or device lost)
+    const isWebGPUError = typeof err === 'number' || 
+                          errorCode === 'GPUCanvasError' || 
+                          errorCode === 'GPUDeviceLostInfo' ||
+                          errorMsg.includes('device') ||
+                          errorMsg.includes('WebGPU');
+    
+    // If WebGPU failed and we haven't tried CPU yet, retry with CPU model
+    if (isWebGPUError && !webgpuFailed) {
+      console.warn('WebGPU execution failed, falling back to CPU:', err);
+      webgpuFailed = true;
+      
+      // Unload current model and reload CPU version
+      const cpuModelId = modelType === 'quality' ? config.textGen.qualityModelIdCPU : config.textGen.fastModelIdCPU;
+      const modelName = modelType === 'quality' ? 'Qwen2.5-0.5B (CPU)' : 'SmolLM2-135M (CPU)';
+      
+      rpc.sendEvent('MODEL_PROGRESS', {
+        modelType: modelType === 'quality' ? 'quality' : 'fast',
+        progress: 0,
+        status: `WebGPU failed, loading ${modelName} for CPU...`,
+      });
+      
+      // Reload model on CPU
+      const cpuGenerator = await pipeline(
+        'text-generation',
+        cpuModelId,
+        {
+          progress_callback: (data: { status?: string; progress?: number | string }) => {
+            if (data?.status === 'progress') {
+              const progressVal = typeof data.progress === 'number' ? data.progress : parseFloat(String(data.progress || 0));
+              rpc.sendEvent('MODEL_PROGRESS', {
+                modelType: modelType === 'quality' ? 'quality' : 'fast',
+                progress: parseFloat(progressVal.toFixed(2)),
+                status: `Loading ${modelName}...`,
+              });
+            }
+          },
+        }
+      );
+      
+      if (modelType === 'quality') {
+        modelState.qualityTextGenerator = cpuGenerator;
+      } else {
+        modelState.textGenerator = cpuGenerator;
+      }
+      
+      rpc.sendEvent('MODEL_LOADED', {
+        modelType: modelType === 'quality' ? 'quality' : 'fast',
+        device: 'CPU',
+        modelName,
+      });
+      
+      // Retry generation with CPU model
+      return generateText(prompt, options);
+    }
+    
     if (err instanceof Error && (err.name === 'AbortError' || err.message.includes('cancelled'))) {
       throw new Error('Generation cancelled');
     }
