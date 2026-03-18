@@ -29,50 +29,110 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
- * Calculate optimal font size to fit text within available page space
+ * Split text into chunks that fit on a single page
  * @param doc - jsPDF instance
  * @param text - Text content
  * @param contentWidth - Available width for text
  * @param availableHeight - Available height for text
- * @param baseFontSize - Starting font size to try
- * @returns Object with fontSize and splitText
+ * @param fontSize - Font size to use
+ * @returns Object with lines array and remaining text
  */
-const calculateFitText = (
+const splitTextForPage = (
   doc: jsPDF,
   text: string,
   contentWidth: number,
   availableHeight: number,
-  baseFontSize: number = 12
-): { fontSize: number; splitText: string[] } => {
+  fontSize: number = 12
+): { lines: string[]; remainingText: string | null } => {
   const lineHeight = 1.15;
-  let fontSize = baseFontSize;
-  let splitText: string[] = [];
-
-  // Try decreasing font sizes until text fits
-  const fontSizes = [baseFontSize, 11, 10, 9, 8, 7];
+  doc.setFontSize(fontSize);
   
-  for (const size of fontSizes) {
-    doc.setFontSize(size);
-    splitText = doc.splitTextToSize(text, contentWidth);
-    const requiredHeight = splitText.length * size * lineHeight;
+  // Split text into lines that fit the width
+  const allLines = doc.splitTextToSize(text, contentWidth);
+  const maxLines = Math.floor(availableHeight / (fontSize * lineHeight));
+  
+  if (allLines.length <= maxLines) {
+    // All text fits on this page
+    return { lines: allLines, remainingText: null };
+  }
+  
+  // Text needs to be split across pages
+  const linesForThisPage = allLines.slice(0, maxLines);
+  const remainingLines = allLines.slice(maxLines);
+  const remainingText = remainingLines.join('\n');
+  
+  return { lines: linesForThisPage, remainingText };
+};
+
+/**
+ * Render text content across multiple pages if needed
+ * @param doc - jsPDF instance
+ * @param text - Text content
+ * @param margin - Page margin
+ * @param textY - Starting Y position for text
+ * @param contentWidth - Available width for text
+ * @param pageHeight - Page height
+ * @param fontSize - Font size to use
+ * @param addFooter - Footer callback function
+ * @param currentPageNum - Current page number
+ * @param totalPages - Total pages in document
+ * @returns Number of additional pages added
+ */
+const renderTextAcrossPages = (
+  doc: jsPDF,
+  text: string,
+  margin: number,
+  textY: number,
+  contentWidth: number,
+  pageHeight: number,
+  fontSize: number,
+  addFooter: (doc: jsPDF, pageNum: number, totalPages: number, pageWidth: number, pageHeight: number, margin: number) => void,
+  currentPageNum: number,
+  totalPages: number
+): number => {
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const lineHeight = 1.15;
+  let additionalPages = 0;
+  let remainingText: string | null = text;
+  let currentY = textY;
+  let pageNum = currentPageNum;
+  
+  while (remainingText !== null) {
+    const availableHeight = pageHeight - currentY - margin - 20;
+    const { lines, remainingText: newRemaining } = splitTextForPage(
+      doc,
+      remainingText,
+      contentWidth,
+      availableHeight,
+      fontSize
+    );
     
-    if (requiredHeight <= availableHeight) {
-      return { fontSize: size, splitText };
+    // Render lines on current page
+    doc.text(lines, margin, currentY);
+    
+    // Add footer to current page
+    addFooter(doc, pageNum, totalPages, pageWidth, pageHeight, margin);
+    
+    remainingText = newRemaining;
+    
+    // If there's remaining text, add a new page
+    if (remainingText !== null) {
+      doc.addPage();
+      additionalPages++;
+      pageNum++;
+      // Update total pages since we added a page
+      // (this is handled by the caller passing updated totalPages)
+      currentY = margin + 25; // Reset Y position for new page
+      
+      // Add header to continuation page
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(128);
+      doc.text('(continued)', pageWidth - margin, margin + 10, { align: 'right' });
     }
   }
-
-  // If even the smallest font doesn't fit, truncate with ellipsis
-  doc.setFontSize(7);
-  splitText = doc.splitTextToSize(text, contentWidth);
-  const maxLines = Math.floor(availableHeight / (7 * lineHeight));
   
-  if (splitText.length > maxLines && maxLines > 0) {
-    // Leave room for truncation message
-    splitText = splitText.slice(0, maxLines - 1);
-    splitText.push("... [Text truncated for PDF to prevent overflow]");
-  }
-
-  return { fontSize: 7, splitText };
+  return additionalPages;
 };
 
 /**
@@ -125,6 +185,7 @@ export function usePdfExport({ bookData }: { bookData?: Book | null } = {}): Use
    * Export PDF with async processing
    * Uses requestAnimationFrame and chunking to avoid blocking the main thread
    * Memory-safe: uses block scoping and explicit nullification for GC
+   * Multi-page support: Text content flows across pages if it doesn't fit
    */
   const exportPDF = useCallback(async () => {
     if (!bookData || !bookData.subject) return;
@@ -144,6 +205,7 @@ export function usePdfExport({ bookData }: { bookData?: Book | null } = {}): Use
       const pageHeight = doc.internal.pageSize.getHeight();
       const margin = 20;
       const contentWidth = pageWidth - margin * 2;
+      const fontSize = 12; // Minimum readable font size
 
       // === COVER PAGE ===
       // Add gradient background effect with rectangles
@@ -220,12 +282,16 @@ export function usePdfExport({ bookData }: { bookData?: Book | null } = {}): Use
         { align: 'center' }
       );
 
-      // Add page number to cover
-      addFooter(doc, 1, (bookData.pages?.length || 1) + 1, pageWidth, pageHeight, margin);
+      // Initial page count (cover + content pages, will be updated if text overflows)
+      let baseTotalPages = (bookData.pages?.length || 1) + 1;
+      
+      // Add footer to cover
+      addFooter(doc, 1, baseTotalPages, pageWidth, pageHeight, margin);
 
       // === CONTENT PAGES ===
       const pages = bookData.pages || [];
-      const totalPages = pages.length + 1; // +1 for cover
+      let pdfPageNum = 2; // Start after cover
+      let totalAdditionalPages = 0; // Track extra pages from text overflow
 
       for (let i = 0; i < pages.length; i++) {
         const page = pages[i];
@@ -245,9 +311,12 @@ export function usePdfExport({ bookData }: { bookData?: Book | null } = {}): Use
         // Update progress
         setExportProgress(Math.round(((i + 1) / pages.length) * 100));
 
-        // Add new page
-        doc.addPage();
-        const pdfPageNum = i + 2; // +1 for cover, +1 for 0-index
+        // Add new page for content
+        if (i > 0 || baseTotalPages > 1) {
+          doc.addPage();
+        }
+        
+        const currentTotalPages = baseTotalPages + totalAdditionalPages;
 
         // Page header with title
         doc.setFontSize(18);
@@ -283,44 +352,97 @@ export function usePdfExport({ bookData }: { bookData?: Book | null } = {}): Use
                   'FAST'
                 );
 
-                // Add content text below image
-                doc.setFontSize(12);
+                // Add content text below image - with multi-page support
+                doc.setFontSize(fontSize);
                 doc.setFont('helvetica', 'normal');
                 doc.setTextColor(50);
                 const textY = imageY + imageHeight + 15;
-                const availableHeight = pageHeight - textY - margin - 20;
-                const { fontSize, splitText } = calculateFitText(doc, page.content || '', contentWidth, availableHeight, 12);
-                doc.setFontSize(fontSize);
-                doc.text(splitText, margin, textY);
+                
+                // Render text, handling overflow across pages
+                const additionalPages = renderTextAcrossPages(
+                  doc,
+                  page.content || '',
+                  margin,
+                  textY,
+                  contentWidth,
+                  pageHeight,
+                  fontSize,
+                  addFooter,
+                  pdfPageNum,
+                  currentTotalPages
+                );
+                
+                totalAdditionalPages += additionalPages;
+                
+                // If we added pages, skip to after the last added page
+                if (additionalPages > 0) {
+                  pdfPageNum += additionalPages;
+                }
               } else {
-                // Fallback: text only
+                // Fallback: text only with multi-page support
                 const textY = margin + 25;
-                const availableHeight = pageHeight - textY - margin - 20;
-                const { fontSize, splitText } = calculateFitText(doc, page.content || '', contentWidth, availableHeight, 12);
-                doc.setFontSize(fontSize);
-                doc.text(splitText, margin, textY);
+                const additionalPages = renderTextAcrossPages(
+                  doc,
+                  page.content || '',
+                  margin,
+                  textY,
+                  contentWidth,
+                  pageHeight,
+                  fontSize,
+                  addFooter,
+                  pdfPageNum,
+                  currentTotalPages
+                );
+                totalAdditionalPages += additionalPages;
+                if (additionalPages > 0) {
+                  pdfPageNum += additionalPages;
+                }
               }
             } // base64String out of scope here
           } catch (err) {
             console.warn(`Page ${i + 1} image failed:`, err);
-            // Fallback to text only
+            // Fallback to text only with multi-page support
             const textY = margin + 25;
-            const availableHeight = pageHeight - textY - margin - 20;
-            const { fontSize, splitText } = calculateFitText(doc, page.content || '', contentWidth, availableHeight, 12);
-            doc.setFontSize(fontSize);
-            doc.text(splitText, margin, textY);
+            const additionalPages = renderTextAcrossPages(
+              doc,
+              page.content || '',
+              margin,
+              textY,
+              contentWidth,
+              pageHeight,
+              fontSize,
+              addFooter,
+              pdfPageNum,
+              baseTotalPages + totalAdditionalPages
+            );
+            totalAdditionalPages += additionalPages;
+            if (additionalPages > 0) {
+              pdfPageNum += additionalPages;
+            }
           }
         } else {
-          // No image - text only
+          // No image - text only with multi-page support
           const textY = margin + 25;
-          const availableHeight = pageHeight - textY - margin - 20;
-          const { fontSize, splitText } = calculateFitText(doc, page.content || '', contentWidth, availableHeight, 12);
-          doc.setFontSize(fontSize);
-          doc.text(splitText, margin, textY);
+          const additionalPages = renderTextAcrossPages(
+            doc,
+            page.content || '',
+            margin,
+            textY,
+            contentWidth,
+            pageHeight,
+            fontSize,
+            addFooter,
+            pdfPageNum,
+            baseTotalPages + totalAdditionalPages
+          );
+          totalAdditionalPages += additionalPages;
+          if (additionalPages > 0) {
+            pdfPageNum += additionalPages;
+          }
         }
 
-        // Add footer
-        addFooter(doc, pdfPageNum, totalPages, pageWidth, pageHeight, margin);
+        // Move to next page for next iteration
+        pdfPageNum++;
       }
 
       // Set PDF metadata

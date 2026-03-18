@@ -218,6 +218,14 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
         </select>
       </div>
 
+      {/* Pre-generation Storage Warning */}
+      {(textModel.status === ModelStatus.IDLE || textModel.status === ModelStatus.UNLOADED) && (
+        <div className="status-warning info">
+          <span className="warning-icon">ℹ️</span>
+          <span>First generation will download AI models (~1.5GB). This runs entirely locally on your device.</span>
+        </div>
+      )}
+
       {/* Model Status Warnings */}
       {isModelsLoading && (
         <div className="status-warning loading">

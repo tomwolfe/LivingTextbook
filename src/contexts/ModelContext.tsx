@@ -1,9 +1,12 @@
 /**
  * Model Context v2 - Using Service Architecture
  * Refactored version using WorkerService, ModelLifecycleService, GenerationService, and StorageService
+ * 
+ * Performance Optimization: Uses useSyncExternalStore for efficient state subscriptions
+ * to prevent global re-renders during model loading progress ticks.
  */
 
-import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, ReactNode, useSyncExternalStore } from 'react';
 import { config } from '../config';
 import { detectDeviceResources, getRecommendedSettings } from '../utils/resourceDetector';
 import { assertStorageAvailability } from '../utils/storageQuota';
@@ -424,6 +427,8 @@ export const ModelProvider: React.FC<ModelProviderProps> = ({
   }, []);
 
   // Context values
+  // Note: modelStates is NOT included in stateContextValue to prevent global re-renders
+  // Components should use useModelStore(selector) for efficient subscriptions
   const actionsContextValue = useMemo(() => ({
     generateText,
     generateQuip,
@@ -455,7 +460,10 @@ export const ModelProvider: React.FC<ModelProviderProps> = ({
     clearImageCache, saveBookToDB, getSavedBook, getSavedBooks, deleteSavedBook,
   ]);
 
+  // State context only includes non-subscription values (device info, capabilities, etc.)
   const stateContextValue = useMemo(() => ({
+    // Expose individual model states for backward compatibility
+    // These will be updated via useModelStore in migrated components
     textModel: modelStates.textModel,
     qualityTextModel: modelStates.qualityTextModel,
     imageModel: modelStates.imageModel,
@@ -468,15 +476,89 @@ export const ModelProvider: React.FC<ModelProviderProps> = ({
   }), [modelStates, speedMode, deviceResources, webgpuCapabilities, storageStatus]);
 
   return (
-    <ModelActionsContext.Provider value={actionsContextValue}>
-      <ModelStateContext.Provider value={stateContextValue}>
-        {children}
-      </ModelStateContext.Provider>
-    </ModelActionsContext.Provider>
+    <ModelServiceInstanceContext.Provider value={modelLifecycleRef}>
+      <ModelActionsContext.Provider value={actionsContextValue}>
+        <ModelStateContext.Provider value={stateContextValue}>
+          {children}
+        </ModelStateContext.Provider>
+      </ModelActionsContext.Provider>
+    </ModelServiceInstanceContext.Provider>
   );
 };
 
-// Re-export hooks for backward compatibility
+// Extended state interface that includes all context values
+export interface ModelContextState extends ModelStates {
+  speedMode: boolean;
+  deviceResources: DeviceResources | null;
+  webgpuCapabilities: WebGPUCapabilities | null;
+  isWebGPUSupported: boolean;
+  storageStatus: {
+    available: boolean;
+    quota: number;
+    usage: number;
+    usageFormatted: string;
+    quotaFormatted: string;
+    percentUsed: number;
+  } | null;
+}
+
+/**
+ * useModelStore - Custom hook using useSyncExternalStore for efficient subscriptions
+ * 
+ * This allows components to subscribe to specific slices of model state,
+ * preventing global re-renders when progress ticks occur.
+ * 
+ * @param selector - Function to select specific state from ModelContextState
+ * @returns Selected state slice
+ */
+export function useModelStore<T>(selector: (states: ModelContextState) => T): T {
+  // Get the service instance from a ref maintained by ModelProvider
+  const serviceRef = useContext(ModelServiceInstanceContext);
+  const stateContext = useContext(ModelStateContext);
+  
+  if (!serviceRef?.current || !stateContext) {
+    throw new Error('useModelStore must be used within a ModelProvider');
+  }
+  
+  const service = serviceRef.current;
+  
+  // useSyncExternalStore subscribes to ModelLifecycleService state changes
+  // and only re-renders when the selected value changes (shallow comparison)
+  const modelStates = useSyncExternalStore(
+    // Subscribe function
+    (callback) => service.subscribeState(callback),
+    // Get current value (for current render)
+    () => service.getStates(),
+    // Get server value (same as client for this use case)
+    () => service.getStates()
+  );
+  
+  // Combine model states with other context values
+  const fullState: ModelContextState = {
+    ...modelStates,
+    speedMode: stateContext.speedMode,
+    deviceResources: stateContext.deviceResources,
+    webgpuCapabilities: stateContext.webgpuCapabilities,
+    isWebGPUSupported: stateContext.isWebGPUSupported,
+    storageStatus: stateContext.storageStatus,
+  };
+  
+  return selector(fullState);
+}
+
+/**
+ * useModelState - Backward compatibility hook
+ * Returns all model states for components that haven't been migrated
+ * @deprecated Use useModelStore with a selector for better performance
+ */
+export const useModelState = () => {
+  // For backward compatibility, return the full state via useModelStore
+  return useModelStore((states) => states);
+};
+
+/**
+ * useModelActions - Get model action functions
+ */
 export const useModelActions = () => {
   const context = useContext(ModelActionsContext);
   if (!context) {
@@ -485,21 +567,20 @@ export const useModelActions = () => {
   return context;
 };
 
-export const useModelState = () => {
-  const context = useContext(ModelStateContext);
-  if (!context) {
-    throw new Error('useModelState must be used within a ModelProvider');
-  }
-  return context;
-};
-
+/**
+ * useModel - Combined hook for actions and state
+ * @deprecated For state, use useModelStore with a selector for better performance
+ */
 export const useModel = () => {
   const actions = useContext(ModelActionsContext);
-  const state = useContext(ModelStateContext);
-  if (!actions || !state) {
+  const state = useModelState();
+  if (!actions) {
     throw new Error('useModel must be used within a ModelProvider');
   }
   return { ...actions, ...state };
 };
+
+// Internal context to expose the ModelLifecycleService instance
+const ModelServiceInstanceContext = createContext<React.MutableRefObject<ModelLifecycleService | null> | null>(null);
 
 export default ModelActionsContext;

@@ -33,6 +33,85 @@ env.useBrowserCache = config.transformers.useBrowserCache;
 // Initialize RPC handler
 const rpc = new WorkerRPC();
 
+// ============ Type Definitions for Hugging Face Transformers ============
+
+/**
+ * Text generation output types from transformers.js
+ */
+interface TextGenerationOutput {
+  generated_text: string | GeneratedTextContent[] | GeneratedTextObject;
+}
+
+interface GeneratedTextContent {
+  content: string;
+  role?: string;
+}
+
+interface GeneratedTextObject {
+  content: string;
+}
+
+interface ChatMessage {
+  role: string;
+  content: string;
+}
+
+interface PipelineConfig {
+  max_new_tokens?: number;
+  temperature?: number;
+  do_sample?: boolean;
+}
+
+/**
+ * Type guard for GeneratedTextContent array
+ */
+function isGeneratedTextArray(text: unknown): text is GeneratedTextContent[] {
+  return Array.isArray(text) && text.length > 0 && typeof text[0] === 'object' && text[0] !== null && 'content' in text[0];
+}
+
+/**
+ * Type guard for GeneratedTextObject
+ */
+function isGeneratedTextObject(text: unknown): text is GeneratedTextObject {
+  return typeof text === 'object' && text !== null && 'content' in text;
+}
+
+/**
+ * Extract content from text generation output
+ */
+function extractGeneratedText(output: unknown): string {
+  try {
+    const outputArray = Array.isArray(output) ? output : [output];
+    const firstOutput = outputArray[0] as TextGenerationOutput | undefined;
+    const generatedText = firstOutput?.generated_text;
+
+    if (!generatedText) {
+      return 'No content generated.';
+    }
+
+    // Handle string response
+    if (typeof generatedText === 'string') {
+      return generatedText;
+    }
+
+    // Handle array of messages - get the last one
+    if (isGeneratedTextArray(generatedText)) {
+      const lastMessage = generatedText[generatedText.length - 1];
+      return lastMessage?.content || 'No content generated.';
+    }
+
+    // Handle single message object
+    if (isGeneratedTextObject(generatedText)) {
+      return generatedText.content;
+    }
+
+    return 'No content generated.';
+  } catch (parseErr) {
+    console.warn('Failed to parse generator output, using default message:', parseErr);
+    return 'No content generated.';
+  }
+}
+
 // Model state - use unknown for pipeline to avoid type compatibility issues with transformers.js v3
 interface ModelState {
   textGenerator: unknown | null;
@@ -85,14 +164,24 @@ class GenerationManager {
 
   /**
    * Cancel the current generation session
+   * Performs aggressive cleanup to free memory from in-progress generations
    */
   cancel() {
+    // Signal abort to any in-flight operations
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
     }
+    
+    // Clear the generation queue immediately
     this.queue = [];
     this.isGenerating = false;
+    
+    // Clear generated pages data to free memory
+    this.generatedPages = [];
+    this.numPages = 0;
+    
+    // Notify main thread of cancellation
     rpc.sendEvent('GENERATION_CANCELLED', {});
   }
 
@@ -442,46 +531,16 @@ async function generateText(
 
     // Call generator directly - casting only for TypeScript
     const output = await (generator as (
-      messages: Array<{ role: string; content: string }>,
-      config: Record<string, unknown>
+      messages: ChatMessage[],
+      config: PipelineConfig
     ) => Promise<unknown>)(messages, {
       max_new_tokens: maxTokens || config.textGen.maxNewTokens,
       temperature: temperature || config.textGen.temperature,
       do_sample: options.doSample ?? config.textGen.doSample,
     });
 
-    // Extract content from chat format
-    // Output can be array or single object depending on transformers.js version
-    // Handles: { generated_text: ... }, [{ generated_text: ... }], or nested arrays
-    let content = 'No content generated.';
-    
-    try {
-      const outputArray = Array.isArray(output) ? output : [output];
-      const firstOutput = outputArray[0] as Record<string, unknown>;
-      const generatedText = firstOutput?.generated_text;
-
-      if (generatedText) {
-        // Handle both string and array responses
-        if (typeof generatedText === 'string') {
-          // Direct string response
-          content = generatedText;
-        } else if (Array.isArray(generatedText)) {
-          // Array of messages - get the last one
-          const textArray = generatedText as Array<Record<string, unknown>>;
-          if (textArray.length > 0) {
-            const lastMessage = textArray[textArray.length - 1] as Record<string, unknown>;
-            if (lastMessage?.content && typeof lastMessage.content === 'string') {
-              content = lastMessage.content;
-            }
-          }
-        } else if (generatedText && typeof generatedText === 'object' && 'content' in generatedText) {
-          // Single message object
-          content = (generatedText as Record<string, unknown>).content as string;
-        }
-      }
-    } catch (parseErr) {
-      console.warn('Failed to parse generator output, using default message:', parseErr);
-    }
+    // Extract content using type-safe helper function
+    const content = extractGeneratedText(output);
 
     return content;
   } catch (err) {

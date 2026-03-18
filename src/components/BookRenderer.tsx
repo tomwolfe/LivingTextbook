@@ -88,53 +88,43 @@ const BookRenderer: React.FC<BookRendererExtendedProps> = ({
   }, [currentPage]);
 
   /**
-   * Keyboard navigation for pages
+   * Keyboard navigation for pages - scoped to the book container
    */
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Only handle arrow keys when not in an input field
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-        return;
-      }
-
-      switch (e.key) {
-        case 'ArrowLeft':
-          e.preventDefault();
-          if (currentPage > 0) {
-            handlePageChange(currentPage - 1);
-          }
-          break;
-        case 'ArrowRight':
-          e.preventDefault();
-          if (currentPage < totalPages - 1) {
-            handlePageChange(currentPage + 1);
-          }
-          break;
-        case 'Home':
-          e.preventDefault();
-          if (currentPage !== 0) {
-            handlePageChange(0);
-          }
-          break;
-        case 'End':
-          e.preventDefault();
-          if (currentPage !== totalPages - 1) {
-            handlePageChange(totalPages - 1);
-          }
-          break;
-        default:
-          break;
-      }
-    };
-
-    // Only attach listener when we have a book to navigate
-    if (bookData && totalPages > 0) {
-      window.addEventListener('keydown', handleKeyDown);
-      return () => {
-        window.removeEventListener('keydown', handleKeyDown);
-      };
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    // Only handle arrow keys when not in an input field
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      return;
     }
-  }, [currentPage, totalPages, bookData, handlePageChange]);
+
+    switch (e.key) {
+      case 'ArrowLeft':
+        e.preventDefault();
+        if (currentPage > 0) {
+          handlePageChange(currentPage - 1);
+        }
+        break;
+      case 'ArrowRight':
+        e.preventDefault();
+        if (currentPage < totalPages - 1) {
+          handlePageChange(currentPage + 1);
+        }
+        break;
+      case 'Home':
+        e.preventDefault();
+        if (currentPage !== 0) {
+          handlePageChange(0);
+        }
+        break;
+      case 'End':
+        e.preventDefault();
+        if (currentPage !== totalPages - 1) {
+          handlePageChange(totalPages - 1);
+        }
+        break;
+      default:
+        break;
+    }
+  }, [currentPage, totalPages, handlePageChange]);
 
   // Empty state
   if (!bookData && !loading && !hasOutline) {
@@ -186,6 +176,7 @@ const BookRenderer: React.FC<BookRendererExtendedProps> = ({
       role="region"
       aria-label="Book reader"
       tabIndex={0}
+      onKeyDown={handleKeyDown}
     >
       <div
         className={`book-page ${isFlipping ? 'flipping' : ''}`}
