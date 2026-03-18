@@ -333,7 +333,7 @@ describe('useBookGeneration Integration', () => {
         })
       );
 
-      const savedBook = {
+      const savedBook: Book = {
         id: 'test-book-1',
         subject: 'Saved Subject',
         pages: [
@@ -351,16 +351,15 @@ describe('useBookGeneration Integration', () => {
         settings: mockSettings,
         createdAt: Date.now(),
         updatedAt: Date.now(),
-      } as const;
+      };
 
       act(() => {
-        result.current.loadBook(savedBook as unknown as Book);
+        result.current.loadBook(savedBook);
       });
 
       expect(result.current.bookData).not.toBeNull();
       expect(result.current.bookData?.subject).toBe('Saved Subject');
-      // pageStates is added by the hook internally
-      expect((result.current.bookData as unknown as { pageStates?: unknown[] }).pageStates).toHaveLength(2);
+      expect(result.current.bookData?.pageStates).toHaveLength(2);
       expect(result.current.getPageStatus(0)).toBe('complete');
       expect(result.current.getPageStatus(1)).toBe('complete');
     });

@@ -452,17 +452,35 @@ async function generateText(
 
     // Extract content from chat format
     // Output can be array or single object depending on transformers.js version
-    const outputArray = Array.isArray(output) ? output : [output];
-    const firstOutput = outputArray[0] as Record<string, unknown>;
-    const generatedText = firstOutput?.generated_text;
-    
+    // Handles: { generated_text: ... }, [{ generated_text: ... }], or nested arrays
     let content = 'No content generated.';
-    if (generatedText) {
-      const textArray = Array.isArray(generatedText) ? generatedText : [generatedText];
-      const lastMessage = textArray[textArray.length - 1] as Record<string, unknown>;
-      if (lastMessage?.content) {
-        content = lastMessage.content as string;
+    
+    try {
+      const outputArray = Array.isArray(output) ? output : [output];
+      const firstOutput = outputArray[0] as Record<string, unknown>;
+      const generatedText = firstOutput?.generated_text;
+
+      if (generatedText) {
+        // Handle both string and array responses
+        if (typeof generatedText === 'string') {
+          // Direct string response
+          content = generatedText;
+        } else if (Array.isArray(generatedText)) {
+          // Array of messages - get the last one
+          const textArray = generatedText as Array<Record<string, unknown>>;
+          if (textArray.length > 0) {
+            const lastMessage = textArray[textArray.length - 1] as Record<string, unknown>;
+            if (lastMessage?.content && typeof lastMessage.content === 'string') {
+              content = lastMessage.content;
+            }
+          }
+        } else if (generatedText && typeof generatedText === 'object' && 'content' in generatedText) {
+          // Single message object
+          content = (generatedText as Record<string, unknown>).content as string;
+        }
       }
+    } catch (parseErr) {
+      console.warn('Failed to parse generator output, using default message:', parseErr);
     }
 
     return content;
@@ -731,9 +749,27 @@ rpc.register('UNLOAD_MODELS', async (payload) => {
 
   for (const modelType of modelTypes) {
     if (modelType === 'fast') {
+      // Explicitly dispose WebGPU/text generator to prevent VRAM leaks
+      const generator = modelState.textGenerator;
+      if (generator && typeof (generator as Record<string, unknown>).dispose === 'function') {
+        try {
+          await ((generator as Record<string, unknown>).dispose as () => Promise<void>)();
+        } catch (disposeErr) {
+          console.warn('Text generator dispose error:', disposeErr);
+        }
+      }
       modelState.textGenerator = null;
       rpc.sendEvent('MODEL_UNLOADED', { modelType: 'fast' });
     } else if (modelType === 'quality') {
+      // Explicitly dispose WebGPU/text generator to prevent VRAM leaks
+      const generator = modelState.qualityTextGenerator;
+      if (generator && typeof (generator as Record<string, unknown>).dispose === 'function') {
+        try {
+          await ((generator as Record<string, unknown>).dispose as () => Promise<void>)();
+        } catch (disposeErr) {
+          console.warn('Quality text generator dispose error:', disposeErr);
+        }
+      }
       modelState.qualityTextGenerator = null;
       rpc.sendEvent('MODEL_UNLOADED', { modelType: 'quality' });
     } else if (modelType === 'image') {

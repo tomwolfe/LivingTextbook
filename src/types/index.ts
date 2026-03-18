@@ -46,6 +46,7 @@ export interface Book {
   settings: BookSettings;
   createdAt?: number;
   updatedAt?: number;
+  pageStates?: PageState[];
 }
 
 /**

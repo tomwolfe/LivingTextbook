@@ -146,6 +146,16 @@ export class ModelLifecycleService {
       return result;
     } catch (error) {
       const appError = toAppError(error, 'Text model initialization');
+      
+      // Ensure any partially loaded model is unloaded to free VRAM
+      try {
+        await this.workerService.send('UNLOAD_MODELS', {
+          modelTypes: [modelType],
+        });
+      } catch (unloadError) {
+        modelLogger.warn('Failed to unload partially loaded model', { error: unloadError as Error });
+      }
+      
       setState({
         status: 'Error',
         loading: false,
@@ -209,6 +219,16 @@ export class ModelLifecycleService {
       return result;
     } catch (error) {
       const appError = toAppError(error, 'Image model initialization');
+      
+      // Ensure any partially loaded model is unloaded to free VRAM
+      try {
+        await this.workerService.send('UNLOAD_MODELS', {
+          modelTypes: ['image'],
+        });
+      } catch (unloadError) {
+        modelLogger.warn('Failed to unload partially loaded image model', { error: unloadError as Error });
+      }
+      
       this.imageModelState = {
         status: 'Error',
         loading: false,

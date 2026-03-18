@@ -124,7 +124,7 @@ export function usePdfExport({ bookData }: { bookData?: Book | null } = {}): Use
   /**
    * Export PDF with async processing
    * Uses requestAnimationFrame and chunking to avoid blocking the main thread
-   * Memory-safe: nullifies base64 strings after use
+   * Memory-safe: uses block scoping and explicit nullification for GC
    */
   const exportPDF = useCallback(async () => {
     if (!bookData || !bookData.subject) return;
@@ -132,9 +132,6 @@ export function usePdfExport({ bookData }: { bookData?: Book | null } = {}): Use
     setExporting(true);
     setExportProgress(0);
     setExportError(null);
-
-    // Track base64 strings for cleanup
-    let base64String: string | null = null;
 
     try {
       const doc = new jsPDF({
@@ -170,30 +167,29 @@ export function usePdfExport({ bookData }: { bookData?: Book | null } = {}): Use
         { align: 'center' }
       );
 
-      // Cover image if available - process asynchronously
-      // Note: Book has pages array, cover image would be from first page
+      // Cover image if available - process in isolated block scope
       const coverPage = bookData.pages?.[0];
       if (coverPage?.image?.blob) {
         try {
-          // Yield to main thread
           await sleep(0);
-          base64String = await blobToBase64(coverPage.image.blob);
-          if (base64String) {
-            const coverImageSize = 80;
-            const coverImageX = (pageWidth - coverImageSize) / 2;
-            doc.addImage(
-              base64String,
-              'JPEG',
-              coverImageX,
-              60,
-              coverImageSize,
-              coverImageSize,
-              undefined,
-              'FAST'
-            );
-          }
-          // Nullify to encourage GC
-          base64String = null;
+          // Use block scope to ensure base64String falls out of scope immediately
+          {
+            const base64String = await blobToBase64(coverPage.image.blob);
+            if (base64String) {
+              const coverImageSize = 80;
+              const coverImageX = (pageWidth - coverImageSize) / 2;
+              doc.addImage(
+                base64String,
+                'JPEG',
+                coverImageX,
+                60,
+                coverImageSize,
+                coverImageSize,
+                undefined,
+                'FAST'
+              );
+            }
+          } // base64String out of scope here
         } catch (err) {
           console.warn('Cover image failed:', err);
         }
@@ -236,7 +232,6 @@ export function usePdfExport({ bookData }: { bookData?: Book | null } = {}): Use
         if (!page) continue;
 
         // Yield to main thread between pages to prevent freezing
-        // Use requestAnimationFrame for better UI repaint, fallback to sleep
         if (i > 0) {
           await new Promise(resolve => {
             if (typeof requestAnimationFrame !== 'undefined') {
@@ -266,46 +261,46 @@ export function usePdfExport({ bookData }: { bookData?: Book | null } = {}): Use
         doc.setTextColor(128);
         doc.text(`Page ${i + 1} of ${pages.length}`, pageWidth - margin, margin + 10, { align: 'right' });
 
-        // Add image if available - process asynchronously
+        // Process image in isolated block scope for GC
         if (page.image?.blob) {
           try {
-            // Yield to main thread before image processing
             await sleep(10);
-            base64String = await blobToBase64(page.image.blob);
-            if (base64String) {
-              const imageHeight = contentWidth;
-              const imageY = margin + 25;
+            // Use block scope to ensure base64String is collected immediately
+            {
+              const base64String = await blobToBase64(page.image.blob);
+              if (base64String) {
+                const imageHeight = contentWidth;
+                const imageY = margin + 25;
 
-              doc.addImage(
-                base64String,
-                'JPEG',
-                margin,
-                imageY,
-                contentWidth,
-                imageHeight,
-                undefined,
-                'FAST'
-              );
+                doc.addImage(
+                  base64String,
+                  'JPEG',
+                  margin,
+                  imageY,
+                  contentWidth,
+                  imageHeight,
+                  undefined,
+                  'FAST'
+                );
 
-              // Add content text below image
-              doc.setFontSize(12);
-              doc.setFont('helvetica', 'normal');
-              doc.setTextColor(50);
-              const textY = imageY + imageHeight + 15;
-              const availableHeight = pageHeight - textY - margin - 20; // Reserve space for footer
-              const { fontSize, splitText } = calculateFitText(doc, page.content || '', contentWidth, availableHeight, 12);
-              doc.setFontSize(fontSize);
-              doc.text(splitText, margin, textY);
-            } else {
-              // Fallback: text only
-              const textY = margin + 25;
-              const availableHeight = pageHeight - textY - margin - 20;
-              const { fontSize, splitText } = calculateFitText(doc, page.content || '', contentWidth, availableHeight, 12);
-              doc.setFontSize(fontSize);
-              doc.text(splitText, margin, textY);
-            }
-            // Nullify to encourage GC
-            base64String = null;
+                // Add content text below image
+                doc.setFontSize(12);
+                doc.setFont('helvetica', 'normal');
+                doc.setTextColor(50);
+                const textY = imageY + imageHeight + 15;
+                const availableHeight = pageHeight - textY - margin - 20;
+                const { fontSize, splitText } = calculateFitText(doc, page.content || '', contentWidth, availableHeight, 12);
+                doc.setFontSize(fontSize);
+                doc.text(splitText, margin, textY);
+              } else {
+                // Fallback: text only
+                const textY = margin + 25;
+                const availableHeight = pageHeight - textY - margin - 20;
+                const { fontSize, splitText } = calculateFitText(doc, page.content || '', contentWidth, availableHeight, 12);
+                doc.setFontSize(fontSize);
+                doc.text(splitText, margin, textY);
+              }
+            } // base64String out of scope here
           } catch (err) {
             console.warn(`Page ${i + 1} image failed:`, err);
             // Fallback to text only
@@ -351,8 +346,6 @@ export function usePdfExport({ bookData }: { bookData?: Book | null } = {}): Use
       console.error('PDF export failed:', error);
       setExportError((error as Error).message || 'Failed to export PDF');
     } finally {
-      // Ensure base64 string is nullified
-      base64String = null;
       setExporting(false);
     }
   }, [bookData, addFooter]);

@@ -29,7 +29,7 @@ function createInitialPageState(): PageState {
 /**
  * Create book with page states
  */
-function createBookWithStates(subject: string, numPages: number, settings: BookSettings): Book & { pageStates: PageState[] } {
+function createBookWithStates(subject: string, numPages: number, settings: BookSettings): Book {
   return {
     subject,
     pages: Array(numPages).fill(null),
@@ -59,7 +59,7 @@ export function useBookGeneration({
   cancelBookGeneration?: () => Promise<void>;
   subscribeToWorkerEvents?: (callback: (data: { type: string; payload?: Record<string, unknown> }) => void) => () => void;
 } = {}): UseBookGenerationReturn {
-  const [bookData, setBookData] = useState<(Book & { pageStates?: PageState[] }) | null>(null);
+  const [bookData, setBookData] = useState<Book | null>(null);
   const [outline, setOutline] = useState<OutlineItem[] | null>(null);
   const [generationError, setGenerationError] = useState<AppError | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -89,7 +89,8 @@ export function useBookGeneration({
 
   /**
    * Extract JSON array from LLM response using robust bracket matching
-   * Finds the first '[' and last ']' to handle conversational filler
+   * Finds the largest balanced array by tracking bracket depth
+   * Handles multiple JSON blocks, nested arrays, and conversational filler
    */
   const extractJsonArray = useCallback((text: string): string | null => {
     if (!text) return null;
@@ -102,23 +103,69 @@ export function useBookGeneration({
       if (codeBlockContent.startsWith('[') && codeBlockContent.endsWith(']')) {
         return codeBlockContent;
       }
-      // If code block exists but doesn't contain array, search within it
-      const firstBracket = codeBlockContent.indexOf('[');
-      const lastBracket = codeBlockContent.lastIndexOf(']');
-      if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
-        return codeBlockContent.substring(firstBracket, lastBracket + 1);
+      // If code block exists, search within it for the largest balanced array
+      const extracted = findLargestBalancedArray(codeBlockContent);
+      if (extracted) return extracted;
+    }
+
+    // No code block or no array found in code block, search the entire text
+    return findLargestBalancedArray(text);
+  }, []);
+
+  /**
+   * Find the largest balanced JSON array in a string by tracking bracket depth
+   */
+  const findLargestBalancedArray = useCallback((text: string): string | null => {
+    if (!text || !text.includes('[')) return null;
+
+    let bestMatch = '';
+    let bestMatchLength = 0;
+
+    // Find all potential starting points (opening brackets)
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '[') {
+        let depth = 0;
+        let inString = false;
+        let escapeNext = false;
+        let startIndex = i;
+
+        for (let j = i; j < text.length; j++) {
+          const char = text[j];
+
+          // Handle string literals to avoid counting brackets inside strings
+          if (char === '"' && !escapeNext) {
+            inString = !inString;
+          } else if (char === '\\' && inString && !escapeNext) {
+            escapeNext = true;
+            continue;
+          } else {
+            escapeNext = false;
+          }
+
+          if (!inString) {
+            if (char === '[') {
+              depth++;
+            } else if (char === ']') {
+              depth--;
+              if (depth === 0) {
+                // Found a complete balanced array
+                const candidate = text.substring(startIndex, j + 1);
+                if (candidate.length > bestMatchLength) {
+                  bestMatch = candidate;
+                  bestMatchLength = candidate.length;
+                }
+                break;
+              } else if (depth < 0) {
+                // Unbalanced, move to next starting point
+                break;
+              }
+            }
+          }
+        }
       }
     }
 
-    // No code block, search the entire text
-    const firstBracket = text.indexOf('[');
-    const lastBracket = text.lastIndexOf(']');
-
-    if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
-      return text.substring(firstBracket, lastBracket + 1);
-    }
-
-    return null;
+    return bestMatchLength > 0 ? bestMatch : null;
   }, []);
 
   /**
@@ -411,10 +458,12 @@ export function useBookGeneration({
       // Step 2: Initialize book data structure with page states
       const initialBook = createBookWithStates(settings.subject, numPages, settings);
       // Mark all pages as queued
-      initialBook.pageStates = initialBook.pageStates.map((state, idx) => ({
-        ...state,
-        status: idx < parsedOutline.length ? 'queued' : 'idle',
-      }));
+      if (initialBook.pageStates) {
+        initialBook.pageStates = initialBook.pageStates.map((state, idx) => ({
+          ...state,
+          status: idx < parsedOutline.length ? 'queued' : 'idle',
+        }));
+      }
       setBookData(initialBook);
 
       // Step 3: Start generation in worker
