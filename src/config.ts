@@ -60,6 +60,7 @@ interface DefaultSettings {
   style: number;
   complexity: number;
   level: ReadingLevel;
+  numPages: number;
 }
 
 /**
@@ -144,6 +145,7 @@ export const config: Config = {
       style: 0.5,
       complexity: 0.5,
       level: 'Student',
+      numPages: 3,
     },
     levelOptions: ['Toddler', 'Student', 'Expert'],
     // Number of pages to generate per book

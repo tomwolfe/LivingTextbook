@@ -1,18 +1,17 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, lazy, Suspense } from 'react';
 import { ModelProvider, useModelActions, useModelState } from './contexts/ModelContext';
 import { useBookGeneration } from './hooks/useBookGeneration';
 import ControlPanel from './components/ControlPanel';
-import BookRenderer from './components/BookRenderer';
 import Narrator from './components/Narrator';
 import ModelStatusDashboard from './components/ModelStatusDashboard';
 import ErrorBoundary from './components/ErrorBoundary';
-import BookLibrary from './components/BookLibrary';
 import type { BookSettings, Book, ImageResult } from './types';
 import { config } from './config';
 import './App.css';
 
-const NUM_PAGES = 3;
+// Lazy load heavy components
+const BookRenderer = lazy(() => import('./components/BookRenderer'));
+const BookLibrary = lazy(() => import('./components/BookLibrary'));
 
 /**
  * Main app content wrapped in ModelProvider
@@ -73,18 +72,20 @@ function AppContent() {
   const handleGenerate = useCallback(async () => {
     if (!settings.subject) return;
 
+    const numPages = settings.numPages || config.ui.defaultNumPages;
     try {
-      await startGeneration(settings, NUM_PAGES);
+      await startGeneration(settings, numPages);
     } catch (err) {
       console.error('Generation failed:', err);
     }
   }, [settings, startGeneration]);
 
   const handlePageChange = useCallback((newPage: number) => {
-    if (newPage >= 0 && newPage < NUM_PAGES) {
+    const numPages = settings.numPages || config.ui.defaultNumPages;
+    if (newPage >= 0 && newPage < numPages) {
       setCurrentPage(newPage);
     }
-  }, []);
+  }, [settings.numPages]);
 
   const handleSaveBook = useCallback(async () => {
     if (!bookData || !bookData.subject) {
@@ -124,6 +125,7 @@ function AppContent() {
       ? imageModelState.status
       : textModelState.status;
 
+  const numPages = settings.numPages || config.ui.defaultNumPages;
   const currentPageData = bookData?.pages?.[currentPage];
   const isLoadingPage = generatingPages.includes(currentPage);
 
@@ -178,17 +180,19 @@ function AppContent() {
           />
 
           <ErrorBoundary>
-            <BookRenderer
-              bookData={currentPageData ? { ...currentPageData, subject: bookData.subject } : null}
-              fullBook={bookData}
-              loading={isLoadingPage}
-              currentPage={currentPage}
-              totalPages={NUM_PAGES}
-              onPageChange={handlePageChange}
-              hasOutline={outline !== null}
-              generateImage={generateImage}
-              onImageUpdated={updatePageImage}
-            />
+            <Suspense fallback={<div className="loading-spinner">Loading book renderer...</div>}>
+              <BookRenderer
+                bookData={currentPageData ? { ...currentPageData, subject: bookData.subject } : null}
+                fullBook={bookData}
+                loading={isLoadingPage}
+                currentPage={currentPage}
+                totalPages={numPages}
+                onPageChange={handlePageChange}
+                hasOutline={outline !== null}
+                generateImage={generateImage}
+                onImageUpdated={updatePageImage}
+              />
+            </Suspense>
           </ErrorBoundary>
         </section>
       </main>
@@ -200,11 +204,13 @@ function AppContent() {
         hasContent={!!currentPageData?.content}
       />
 
-      <BookLibrary
-        isOpen={libraryOpen}
-        onClose={() => setLibraryOpen(false)}
-        onLoadBook={handleLoadBook}
-      />
+      <Suspense fallback={<div className="loading-spinner">Loading library...</div>}>
+        <BookLibrary
+          isOpen={libraryOpen}
+          onClose={() => setLibraryOpen(false)}
+          onLoadBook={handleLoadBook}
+        />
+      </Suspense>
     </div>
   );
 }

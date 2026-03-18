@@ -268,3 +268,6 @@ export default {
   LEVEL_SPECS,
   VISUAL_STYLES,
 };
+
+// Named exports for testing
+export { LEVEL_SPECS, VISUAL_STYLES };

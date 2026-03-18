@@ -10,8 +10,7 @@
  * Communication uses UUID-based RPC to prevent race conditions.
  */
 
-import { pipeline, env, AutoTokenizer } from '@huggingface/transformers';
-import type { Pipeline } from '@huggingface/transformers';
+import { pipeline, env, AutoTokenizer, type TextGenerationPipeline } from '@huggingface/transformers';
 import { loadModel, generateImage, unloadModel, detectCapabilities } from 'web-txt2img';
 import type { LoadResult, GenerateResult } from 'web-txt2img';
 import { config } from '../config';
@@ -36,8 +35,8 @@ const rpc = new WorkerRPC();
 
 // Model state
 interface ModelState {
-  textGenerator: Pipeline | null;
-  qualityTextGenerator: Pipeline | null;
+  textGenerator: TextGenerationPipeline | null;
+  qualityTextGenerator: TextGenerationPipeline | null;
   imageModelLoaded: boolean;
   imageModelLoadPromise: Promise<LoadResult | null> | null;
   activeTextModel: 'fast' | 'quality';
@@ -101,19 +100,19 @@ async function initTextModel(modelType: 'fast' | 'quality' = 'fast'): Promise<{ 
 
     // Try WebGPU first
     try {
-      const generator: Pipeline = await pipeline(
+      const generator = await pipeline(
         'text-generation',
         modelId,
         {
           device: 'webgpu',
           progress_callback: progressCallback,
         }
-      ) as unknown as Pipeline;
+      );
 
       if (isQuality) {
-        modelState.qualityTextGenerator = generator;
+        modelState.qualityTextGenerator = generator as TextGenerationPipeline;
       } else {
-        modelState.textGenerator = generator;
+        modelState.textGenerator = generator as TextGenerationPipeline;
       }
 
       modelState.activeTextModel = modelType;
@@ -129,18 +128,18 @@ async function initTextModel(modelType: 'fast' | 'quality' = 'fast'): Promise<{ 
       console.warn('WebGPU not available, falling back to CPU:', webgpuErr);
 
       // Fallback to CPU
-      const generator: Pipeline = await pipeline(
+      const generator = await pipeline(
         'text-generation',
         cpuModelId,
         {
           progress_callback: progressCallback,
         }
-      ) as unknown as Pipeline;
+      );
 
       if (isQuality) {
-        modelState.qualityTextGenerator = generator;
+        modelState.qualityTextGenerator = generator as TextGenerationPipeline;
       } else {
-        modelState.textGenerator = generator;
+        modelState.textGenerator = generator as TextGenerationPipeline;
       }
 
       modelState.activeTextModel = modelType;
@@ -300,14 +299,17 @@ async function generateText(
       max_new_tokens: maxTokens || config.textGen.maxNewTokens,
       temperature: temperature || config.textGen.temperature,
       do_sample: options.doSample ?? config.textGen.doSample,
-      // Pass abort signal if supported by transformers.js
-      signal: abortController?.signal,
     });
 
     // Extract content from chat format
-    const content = output[0]?.generated_text?.[output[0].generated_text.length - 1]?.content;
+    // Handle both TextGenerationOutput and TextGenerationSingle types
+    const outputItem = output[0] as { generated_text?: Array<{ content: string }> } | undefined;
+    const generatedText = outputItem?.generated_text;
+    const content = generatedText && generatedText.length > 0
+      ? generatedText[generatedText.length - 1].content
+      : 'No content generated.';
 
-    return content || 'No content generated.';
+    return content;
   } catch (err) {
     if (err instanceof Error && (err.name === 'AbortError' || err.message.includes('cancelled'))) {
       throw new Error('Generation cancelled');

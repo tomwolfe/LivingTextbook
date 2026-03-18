@@ -29,36 +29,39 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
     const { name, value } = e.target;
     setSettings({
       ...settings,
-      [name]: name === 'level' ? value : parseFloat(value)
+      [name]: name === 'level' ? value : name === 'numPages' ? parseInt(value, 10) : parseFloat(value)
     });
   };
 
   const handleSliderKeyDown = (
-    e: KeyboardEvent<HTMLInputElement>, 
-    name: keyof BookSettings, 
+    e: KeyboardEvent<HTMLInputElement>,
+    name: keyof BookSettings,
     currentValue: number
   ) => {
-    const step = 0.1;
+    // Use integer steps for numPages, float steps for others
+    const step = name === 'numPages' ? 1 : 0.1;
+    const maxVal = name === 'numPages' ? 5 : 1;
+    const minVal = name === 'numPages' ? 1 : 0;
     let newValue = currentValue;
 
     switch (e.key) {
       case 'ArrowRight':
       case 'ArrowUp':
         e.preventDefault();
-        newValue = Math.min(1, currentValue + step);
+        newValue = Math.min(maxVal, currentValue + step);
         break;
       case 'ArrowLeft':
       case 'ArrowDown':
         e.preventDefault();
-        newValue = Math.max(0, currentValue - step);
+        newValue = Math.max(minVal, currentValue - step);
         break;
       case 'Home':
         e.preventDefault();
-        newValue = 0;
+        newValue = minVal;
         break;
       case 'End':
         e.preventDefault();
-        newValue = 1;
+        newValue = maxVal;
         break;
       default:
         return;
@@ -66,7 +69,7 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
 
     setSettings({
       ...settings,
-      [name]: parseFloat(newValue.toFixed(1))
+      [name]: name === 'numPages' ? Math.round(newValue) : parseFloat(newValue.toFixed(1))
     });
   };
 
@@ -186,6 +189,22 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
             onKeyDown={(e) => handleSliderKeyDown(e, 'complexity', settings.complexity)}
             aria-labelledby="complexity-label"
             aria-valuetext={settings.complexity > 0.7 ? "Deep" : settings.complexity < 0.3 ? "Simple" : "Medium"}
+          />
+        </div>
+
+        <div className="slider-item">
+          <label id="pages-label">Number of Pages: {settings.numPages || 3}</label>
+          <input
+            type="range"
+            name="numPages"
+            min="1"
+            max="5"
+            step="1"
+            value={settings.numPages || 3}
+            onChange={handleChange}
+            onKeyDown={(e) => handleSliderKeyDown(e, 'numPages', settings.numPages || 3)}
+            aria-labelledby="pages-label"
+            aria-valuetext={`${settings.numPages || 3} pages`}
           />
         </div>
       </div>

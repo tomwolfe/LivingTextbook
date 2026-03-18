@@ -29,6 +29,54 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
+ * Calculate optimal font size to fit text within available page space
+ * @param doc - jsPDF instance
+ * @param text - Text content
+ * @param contentWidth - Available width for text
+ * @param availableHeight - Available height for text
+ * @param baseFontSize - Starting font size to try
+ * @returns Object with fontSize and splitText
+ */
+const calculateFitText = (
+  doc: jsPDF,
+  text: string,
+  contentWidth: number,
+  availableHeight: number,
+  baseFontSize: number = 12
+): { fontSize: number; splitText: string[] } => {
+  const lineHeight = 1.15;
+  let fontSize = baseFontSize;
+  let splitText: string[] = [];
+
+  // Try decreasing font sizes until text fits
+  const fontSizes = [baseFontSize, 11, 10, 9, 8, 7];
+  
+  for (const size of fontSizes) {
+    doc.setFontSize(size);
+    splitText = doc.splitTextToSize(text, contentWidth);
+    const requiredHeight = splitText.length * size * lineHeight;
+    
+    if (requiredHeight <= availableHeight) {
+      return { fontSize: size, splitText };
+    }
+  }
+
+  // If even the smallest font doesn't fit, truncate with ellipsis
+  doc.setFontSize(7);
+  splitText = doc.splitTextToSize(text, contentWidth);
+  const maxLines = Math.floor(availableHeight / (7 * lineHeight));
+  
+  if (splitText.length > maxLines && maxLines > 0) {
+    splitText = splitText.slice(0, maxLines);
+    // Add ellipsis to last line
+    const lastLine = splitText[splitText.length - 1];
+    splitText[splitText.length - 1] = lastLine.slice(0, -3) + '...';
+  }
+
+  return { fontSize: 7, splitText };
+};
+
+/**
  * usePdfExport Hook
  * Handles PDF export with async processing to avoid blocking the main thread
  * Memory-safe: explicitly nullifies base64 strings after use to encourage GC
@@ -245,34 +293,36 @@ export function usePdfExport({ bookData }: { bookData?: Book | null } = {}): Use
               doc.setFont('helvetica', 'normal');
               doc.setTextColor(50);
               const textY = imageY + imageHeight + 15;
-              const splitText = doc.splitTextToSize(page.content || '', contentWidth);
+              const availableHeight = pageHeight - textY - margin - 20; // Reserve space for footer
+              const { fontSize, splitText } = calculateFitText(doc, page.content || '', contentWidth, availableHeight, 12);
+              doc.setFontSize(fontSize);
               doc.text(splitText, margin, textY);
             } else {
               // Fallback: text only
-              doc.setFontSize(12);
-              doc.setFont('helvetica', 'normal');
-              doc.setTextColor(50);
-              const splitText = doc.splitTextToSize(page.content || '', contentWidth);
-              doc.text(splitText, margin, margin + 25);
+              const textY = margin + 25;
+              const availableHeight = pageHeight - textY - margin - 20;
+              const { fontSize, splitText } = calculateFitText(doc, page.content || '', contentWidth, availableHeight, 12);
+              doc.setFontSize(fontSize);
+              doc.text(splitText, margin, textY);
             }
             // Nullify to encourage GC
             base64String = null;
           } catch (err) {
             console.warn(`Page ${i + 1} image failed:`, err);
             // Fallback to text only
-            doc.setFontSize(12);
-            doc.setFont('helvetica', 'normal');
-            doc.setTextColor(50);
-            const splitText = doc.splitTextToSize(page.content || '', contentWidth);
-            doc.text(splitText, margin, margin + 25);
+            const textY = margin + 25;
+            const availableHeight = pageHeight - textY - margin - 20;
+            const { fontSize, splitText } = calculateFitText(doc, page.content || '', contentWidth, availableHeight, 12);
+            doc.setFontSize(fontSize);
+            doc.text(splitText, margin, textY);
           }
         } else {
           // No image - text only
-          doc.setFontSize(12);
-          doc.setFont('helvetica', 'normal');
-          doc.setTextColor(50);
-          const splitText = doc.splitTextToSize(page.content || '', contentWidth);
-          doc.text(splitText, margin, margin + 25);
+          const textY = margin + 25;
+          const availableHeight = pageHeight - textY - margin - 20;
+          const { fontSize, splitText } = calculateFitText(doc, page.content || '', contentWidth, availableHeight, 12);
+          doc.setFontSize(fontSize);
+          doc.text(splitText, margin, textY);
         }
 
         // Add footer

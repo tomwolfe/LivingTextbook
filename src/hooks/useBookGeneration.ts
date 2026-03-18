@@ -39,52 +39,37 @@ export function useBookGeneration({
   const generatedImageUrlsRef = useRef<Set<string>>(new Set());
 
   /**
-   * Parse outline from LLM response with robust JSON extraction
+   * Extract JSON array from LLM response using robust bracket matching
+   * Finds the first '[' and last ']' to handle conversational filler
    */
-  const parseOutline = useCallback((response: string, numPages: number = 3): OutlineItem[] => {
-    try {
-      if (!response) {
-        return createFallbackOutline(numPages);
-      }
+  const extractJsonArray = useCallback((text: string): string | null => {
+    if (!text) return null;
 
-      // Try to extract JSON from the response
-      // First, strip markdown code blocks if present
-      let cleanResponse = response;
-      const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (codeBlockMatch) {
-        cleanResponse = codeBlockMatch[1];
+    // First, try to extract from markdown code blocks
+    const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) {
+      const codeBlockContent = codeBlockMatch[1].trim();
+      // Verify it's actually a JSON array
+      if (codeBlockContent.startsWith('[') && codeBlockContent.endsWith(']')) {
+        return codeBlockContent;
       }
-
-      // Try to find JSON array in the response
-      const jsonMatch = cleanResponse.match(/\[.*\]/s);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (Array.isArray(parsed) && parsed.length === numPages) {
-          // Validate schema
-          const isValid = parsed.every((item: unknown) =>
-            item && typeof item === 'object' &&
-            'title' in item && typeof item.title === 'string' &&
-            'focus' in item && typeof item.focus === 'string'
-          );
-          if (isValid) {
-            return parsed as OutlineItem[];
-          }
-        }
+      // If code block exists but doesn't contain array, search within it
+      const firstBracket = codeBlockContent.indexOf('[');
+      const lastBracket = codeBlockContent.lastIndexOf(']');
+      if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+        return codeBlockContent.substring(firstBracket, lastBracket + 1);
       }
-    } catch (err) {
-      console.warn('Failed to parse outline with JSON, trying string-matching fallback:', err);
     }
 
-    // Try string-matching fallback before giving up
-    const stringMatchedOutline = parseOutlineWithStringMatching(response, numPages);
-    if (stringMatchedOutline && stringMatchedOutline.length > 0) {
-      console.log('Successfully parsed outline with string-matching fallback');
-      return stringMatchedOutline;
+    // No code block, search the entire text
+    const firstBracket = text.indexOf('[');
+    const lastBracket = text.lastIndexOf(']');
+
+    if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+      return text.substring(firstBracket, lastBracket + 1);
     }
 
-    // Final fallback outline
-    console.warn('All parsing failed, using default fallback outline');
-    return createFallbackOutline(numPages);
+    return null;
   }, []);
 
   /**
@@ -106,13 +91,13 @@ export function useBookGeneration({
 
     const outline: OutlineItem[] = [];
     const lines = response.split('\n');
-    
+
     let currentTitle: string | null = null;
     let currentFocus: string | null = null;
 
     for (const line of lines) {
       const trimmedLine = line.trim();
-      
+
       // Look for title patterns: "title:", "Title:", "1.", "Page 1:", etc.
       const titleMatch = trimmedLine.match(/^(?:title|page\s*\d*:?|\d+\.)\s*:?\s*(.+)$/i);
       if (titleMatch) {
@@ -171,6 +156,52 @@ export function useBookGeneration({
 
     return null;
   }, []);
+
+  /**
+   * Parse outline from LLM response with robust JSON extraction
+   */
+  const parseOutline = useCallback((response: string, numPages: number = 3): OutlineItem[] => {
+    try {
+      if (!response) {
+        return createFallbackOutline(numPages);
+      }
+
+      // Extract JSON array using robust bracket matching
+      const jsonArray = extractJsonArray(response);
+
+      if (jsonArray) {
+        try {
+          const parsed = JSON.parse(jsonArray);
+          if (Array.isArray(parsed) && parsed.length === numPages) {
+            // Validate schema
+            const isValid = parsed.every((item: unknown) =>
+              item && typeof item === 'object' &&
+              'title' in item && typeof item.title === 'string' &&
+              'focus' in item && typeof item.focus === 'string'
+            );
+            if (isValid) {
+              return parsed as OutlineItem[];
+            }
+          }
+        } catch (jsonErr) {
+          console.warn('JSON parsing failed, trying string-matching fallback:', jsonErr);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to parse outline with JSON, trying string-matching fallback:', err);
+    }
+
+    // Try string-matching fallback before giving up
+    const stringMatchedOutline = parseOutlineWithStringMatching(response, numPages);
+    if (stringMatchedOutline && stringMatchedOutline.length > 0) {
+      console.log('Successfully parsed outline with string-matching fallback');
+      return stringMatchedOutline;
+    }
+
+    // Final fallback outline
+    console.warn('All parsing failed, using default fallback outline');
+    return createFallbackOutline(numPages);
+  }, [extractJsonArray, createFallbackOutline, parseOutlineWithStringMatching]);
 
   /**
    * Handle worker generation events via context subscription

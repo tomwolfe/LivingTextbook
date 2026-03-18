@@ -45,6 +45,7 @@ export interface BookSettings {
   style: number; // 0-1
   complexity: number; // 0-1
   level: ReadingLevel;
+  numPages?: number; // Number of pages to generate (1-5)
 }
 
 /**

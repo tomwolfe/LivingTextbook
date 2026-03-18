@@ -13,10 +13,22 @@ const mockGPU = {
   requestAdapter: vi.fn(),
 };
 
-Object.assign(global.navigator, {
-  gpu: mockGPU,
-  deviceMemory: 8,
-  hardwareConcurrency: 4,
+// Mock navigator properties properly using getters
+const originalNavigator = global.navigator;
+Object.defineProperty(global.navigator, 'gpu', {
+  value: mockGPU,
+  writable: true,
+  configurable: true,
+});
+Object.defineProperty(global.navigator, 'deviceMemory', {
+  value: 8,
+  writable: true,
+  configurable: true,
+});
+Object.defineProperty(global.navigator, 'hardwareConcurrency', {
+  value: 4,
+  writable: true,
+  configurable: true,
 });
 
 // Mock URL.createObjectURL

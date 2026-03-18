@@ -1,14 +1,13 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, ReactNode } from 'react';
 import { config } from '../config';
 import { detectDeviceResources, getRecommendedSettings } from '../utils/resourceDetector.ts';
 import { saveBook, getBook, getAllBooks, deleteBook, getCacheStats, clearImageCache, getCachedImage } from '../utils/imageCache.ts';
 import { MainThreadRPC } from '../utils/workerRPC.ts';
 import { assertStorageAvailability } from '../utils/storageQuota';
-import type { 
-  ModelState, 
-  WebGPUCapabilities, 
-  DeviceResources, 
+import type {
+  ModelState,
+  WebGPUCapabilities,
+  DeviceResources,
   GenerationSettings,
   BookSettings,
   OutlineItem,
