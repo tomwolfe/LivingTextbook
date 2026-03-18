@@ -185,8 +185,11 @@ export class WorkerRPC {
    * @param {string} action - The action to handle
    * @param {Function} handler - Async function to handle the action
    */
-  register(action: string, handler: HandlerFunction) {
-    this.handlers.set(action, handler);
+  register<T extends WorkerAction>(
+    action: T,
+    handler: (payload: WorkerActionPayloads[T]) => Promise<unknown>
+  ) {
+    this.handlers.set(action, handler as HandlerFunction);
   }
 
   /**

@@ -50,25 +50,168 @@ const modelState: ModelState = {
   activeTextModel: 'fast',
 };
 
-// Generation session state
-interface GenerationSessionState {
-  queue: Array<{ pageNum: number; pageOutline: OutlineItem }>;
-  isGenerating: boolean;
-  settings: BookSettings | null;
-  numPages: number;
-  generatedPages: Array<{ content: string; title: string } | null>;
+/**
+ * GenerationManager handles the lifecycle of a book generation session
+ */
+class GenerationManager {
+  private queue: Array<{ pageNum: number; pageOutline: OutlineItem }> = [];
+  private isGenerating: boolean = false;
+  private settings: BookSettings | null = null;
+  private numPages: number = 0;
+  private generatedPages: Array<{ content: string; title: string } | null> = [];
+  private abortController: AbortController | null = null;
+
+  /**
+   * Start a new generation session
+   */
+  async start(settings: BookSettings, outline: OutlineItem[], numPages: number) {
+    // Cancel any existing session
+    this.cancel();
+
+    this.settings = settings;
+    this.numPages = numPages;
+    this.generatedPages = Array(numPages).fill(null);
+    this.abortController = new AbortController();
+    this.queue = outline.map((pageOutline, idx) => ({
+      pageNum: idx,
+      pageOutline,
+    }));
+
+    // Start processing queue asynchronously
+    this.processQueue();
+    
+    return { queued: this.queue.length };
+  }
+
+  /**
+   * Cancel the current generation session
+   */
+  cancel() {
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+    this.queue = [];
+    this.isGenerating = false;
+    rpc.sendEvent('GENERATION_CANCELLED', {});
+  }
+
+  /**
+   * Process the generation queue sequentially
+   */
+  private async processQueue() {
+    if (this.isGenerating || this.queue.length === 0) return;
+
+    this.isGenerating = true;
+
+    while (this.queue.length > 0) {
+      // Check for abort BEFORE processing each page
+      if (this.abortController?.signal.aborted) {
+        this.isGenerating = false;
+        return;
+      }
+
+      const { pageNum, pageOutline } = this.queue.shift()!;
+
+      // Notify main thread that we're starting this page
+      rpc.sendEvent('PAGE_START', { pageNum });
+
+      try {
+        const pageData = await this.generatePage(pageNum, pageOutline);
+
+        // Check for abort AFTER generation completes
+        if (this.abortController?.signal.aborted) {
+          this.isGenerating = false;
+          return;
+        }
+
+        // Send generated page data back to main thread
+        rpc.sendEvent('PAGE_COMPLETE', {
+          pageNum,
+          pageData,
+        });
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Generation failed';
+
+        // Check if this was a cancellation
+        if (errorMessage.includes('cancelled') || this.abortController?.signal.aborted) {
+          this.isGenerating = false;
+          return;
+        }
+
+        console.error(`Worker: Failed to generate page ${pageNum}:`, err);
+        rpc.sendEvent('PAGE_ERROR', {
+          pageNum,
+          error: errorMessage,
+        });
+      }
+    }
+
+    this.isGenerating = false;
+    rpc.sendEvent('QUEUE_COMPLETE', {});
+  }
+
+  /**
+   * Generate a single page (sequential text/image)
+   */
+  private async generatePage(pageNum: number, pageOutline: OutlineItem) {
+    const signal = this.abortController?.signal;
+    
+    if (signal?.aborted) {
+      throw new Error('Generation cancelled');
+    }
+
+    // Get prompts
+    const previousPageContent = pageNum > 0 ? this.generatedPages[pageNum - 1]?.content : null;
+    const { textPrompt, imagePrompt } = generatePrompt(
+      this.settings!.subject,
+      this.settings!,
+      pageNum + 1,
+      this.numPages,
+      previousPageContent
+    );
+
+    // Add page-specific context from outline
+    const enhancedTextPrompt = `${textPrompt}\n\nFocus on: ${pageOutline.focus}`;
+
+    // Generate text FIRST
+    const content = await generateText(enhancedTextPrompt, { 
+      complexity: this.settings!.complexity,
+      signal // Pass signal to underlying generators
+    });
+
+    if (signal?.aborted) throw new Error('Generation cancelled');
+
+    // Generate image SECOND
+    const imageResult = await generateImageFromPrompt(imagePrompt.positive, { 
+      negativePrompt: imagePrompt.negative,
+      signal 
+    });
+
+    if (signal?.aborted) throw new Error('Generation cancelled');
+
+    // Generate quip
+    let quip: string | null = null;
+    if (content) {
+      const quipPrompt = generateQuipPrompt(content, this.settings!.subject);
+      quip = await generateQuip(quipPrompt, signal);
+    }
+
+    // Store content for semantic consistency
+    this.generatedPages[pageNum] = { content, title: pageOutline.title };
+
+    return {
+      title: pageOutline.title,
+      content: content || 'Content generation failed.',
+      image: imageResult,
+      quip: quip,
+      settings: { ...this.settings! },
+    };
+  }
 }
 
-const generationSession: GenerationSessionState = {
-  queue: [],
-  isGenerating: false,
-  settings: null,
-  numPages: 0,
-  generatedPages: [],
-};
-
-// AbortController for cancellation
-let abortController: AbortController | null = null;
+// Global instance of the generation manager
+const generationManager = new GenerationManager();
 
 /**
  * Initialize text generation model (fast or quality)
@@ -260,9 +403,9 @@ let webgpuFailed = false; // Track if WebGPU execution has failed
 
 async function generateText(
   prompt: string,
-  options: TextGenerationOptions = {}
+  options: TextGenerationOptions & { signal?: AbortSignal } = {}
 ): Promise<string> {
-  const { complexity, maxTokens, temperature, systemPrompt } = options;
+  const { complexity, maxTokens, temperature, systemPrompt, signal } = options;
 
   // Determine which model to use based on complexity
   const modelType = complexity !== undefined && complexity >= config.textGen.complexityThreshold ? 'quality' : 'fast';
@@ -293,7 +436,7 @@ async function generateText(
     ];
 
     // Check for abort signal
-    if (abortController?.signal.aborted) {
+    if (signal?.aborted) {
       throw new Error('Generation cancelled');
     }
 
@@ -383,7 +526,7 @@ async function generateText(
       return generateText(prompt, options);
     }
     
-    if (err instanceof Error && (err.name === 'AbortError' || err.message.includes('cancelled'))) {
+    if (err instanceof Error && (err.name === 'AbortError' || err.message.includes('cancelled') || signal?.aborted)) {
       throw new Error('Generation cancelled');
     }
     console.error('Text generation error:', err);
@@ -394,15 +537,17 @@ async function generateText(
 /**
  * Generate a witty quip
  */
-async function generateQuip(content: string): Promise<string | null> {
+async function generateQuip(content: string, signal?: AbortSignal): Promise<string | null> {
   try {
     const quip = await generateText(content, {
       systemPrompt: 'You are Logic the Lemur, a sassy, playful character who breaks the fourth wall.',
       maxTokens: 50,
       temperature: 0.9,
+      signal,
     });
     return quip;
   } catch (err) {
+    if (signal?.aborted) throw err;
     console.warn('Failed to generate quip:', err);
     return null;
   }
@@ -414,9 +559,9 @@ async function generateQuip(content: string): Promise<string | null> {
  */
 async function generateImageFromPrompt(
   prompt: string,
-  options: ImageGenerationOptions = {}
+  options: ImageGenerationOptions & { signal?: AbortSignal } = {}
 ): Promise<{ buffer: ArrayBuffer; type: string; cached: boolean }> {
-  const { negativePrompt } = options;
+  const { negativePrompt, signal } = options;
 
   // Initialize image model
   const initResult = await initImageModel();
@@ -435,7 +580,7 @@ async function generateImageFromPrompt(
 
   try {
     // Check for abort before starting generation
-    if (abortController?.signal.aborted) {
+    if (signal?.aborted) {
       throw new Error('Generation cancelled');
     }
 
@@ -456,7 +601,7 @@ async function generateImageFromPrompt(
     const result = await generateImage(generateImageParams) as GenerateResult;
 
     // Check for abort after generation completes
-    if (abortController?.signal.aborted) {
+    if (signal?.aborted) {
       throw new Error('Generation cancelled');
     }
 
@@ -483,156 +628,12 @@ async function generateImageFromPrompt(
       throw new Error('Generation failed');
     }
   } catch (err) {
-    if (err instanceof Error && err.message.includes('cancelled')) {
+    if (err instanceof Error && (err.message.includes('cancelled') || signal?.aborted)) {
       throw new Error('Generation cancelled');
     }
     console.error('Image generation error:', err);
     throw err;
   }
-}
-
-/**
- * Generate prompts for a page using promptEngine
- */
-function generatePagePrompts(pageNum: number, pageOutline: OutlineItem): { textPrompt: string; imagePrompt: { positive: string; negative: string } } {
-  const previousPageContent = pageNum > 0 ? generationSession.generatedPages[pageNum - 1]?.content : null;
-
-  const { textPrompt, imagePrompt } = generatePrompt(
-    generationSession.settings!.subject,
-    generationSession.settings!,
-    pageNum + 1,
-    generationSession.numPages,
-    previousPageContent
-  );
-
-  return { textPrompt, imagePrompt };
-}
-
-/**
- * Generate a single page with text, image, and quip
- * Note: Text and image generation are executed SEQUENTIALLY to prevent VRAM exhaustion.
- * Running two WebGPU models simultaneously crashes most consumer devices.
- */
-async function generatePage(pageNum: number, pageOutline: OutlineItem): Promise<{
-  title: string;
-  content: string;
-  image: { buffer: ArrayBuffer; type: string; cached: boolean };
-  quip: string | null;
-  settings: BookSettings;
-}> {
-  // Check for abort before starting page generation
-  if (abortController?.signal.aborted) {
-    throw new Error('Generation cancelled');
-  }
-
-  // Step 1: Get prompts
-  const { textPrompt, imagePrompt } = generatePagePrompts(pageNum, pageOutline);
-
-  // Add page-specific context from outline
-  const enhancedTextPrompt = `${textPrompt}\n\nFocus on: ${pageOutline.focus}`;
-
-  // Step 2: Generate text FIRST (sequential to avoid VRAM spike)
-  const content = await generateText(enhancedTextPrompt, { complexity: generationSession.settings!.complexity });
-
-  // Check for abort after text generation
-  if (abortController?.signal.aborted) {
-    throw new Error('Generation cancelled');
-  }
-
-  // Step 3: Generate image SECOND (after text model releases VRAM)
-  const imageResult = await generateImageFromPrompt(imagePrompt.positive, { negativePrompt: imagePrompt.negative });
-
-  // Check for abort after image generation
-  if (abortController?.signal.aborted) {
-    throw new Error('Generation cancelled');
-  }
-
-  // Step 4: Generate quip after content is ready
-  let quip: string | null = null;
-  if (content) {
-    const quipPrompt = generateQuipPrompt(content, generationSession.settings!.subject);
-    quip = await generateQuip(quipPrompt);
-  }
-
-  // Store this page's content for semantic consistency with next page
-  generationSession.generatedPages[pageNum] = { content, title: pageOutline.title };
-
-  return {
-    title: pageOutline.title,
-    content: content || 'Content generation failed.',
-    image: imageResult,
-    quip: quip,
-    settings: { ...generationSession.settings! },
-  };
-}
-
-/**
- * Process the generation queue
- */
-async function processGenerationQueue(): Promise<void> {
-  if (generationSession.isGenerating || generationSession.queue.length === 0) return;
-
-  generationSession.isGenerating = true;
-
-  while (generationSession.queue.length > 0) {
-    // Check for abort BEFORE processing each page
-    if (abortController?.signal.aborted) {
-      generationSession.queue = [];
-      generationSession.isGenerating = false;
-      rpc.sendEvent('GENERATION_CANCELLED', {});
-      return;
-    }
-
-    const { pageNum, pageOutline } = generationSession.queue.shift()!;
-
-    // Notify main thread that we're starting this page
-    rpc.sendEvent('PAGE_START', { pageNum });
-
-    try {
-      // Double-check abort before starting generation
-      if (abortController?.signal.aborted) {
-        generationSession.queue = [];
-        generationSession.isGenerating = false;
-        rpc.sendEvent('GENERATION_CANCELLED', {});
-        return;
-      }
-
-      const pageData = await generatePage(pageNum, pageOutline);
-
-      // Check for abort AFTER generation completes (before sending result)
-      if (abortController?.signal.aborted) {
-        generationSession.queue = [];
-        generationSession.isGenerating = false;
-        rpc.sendEvent('GENERATION_CANCELLED', {});
-        return;
-      }
-
-      // Send generated page data back to main thread
-      rpc.sendEvent('PAGE_COMPLETE', {
-        pageNum,
-        pageData,
-      });
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Generation failed';
-
-      // Check if this was a cancellation
-      if (errorMessage.includes('cancelled')) {
-        generationSession.queue = [];
-        generationSession.isGenerating = false;
-        rpc.sendEvent('GENERATION_CANCELLED', {});
-        return;
-      }
-
-      console.error(`Worker: Failed to generate page ${pageNum}:`, err);
-      rpc.sendEvent('PAGE_ERROR', {
-        pageNum,
-        error: errorMessage,
-      });
-    }
-  }
-
-  generationSession.isGenerating = false;
-  rpc.sendEvent('QUEUE_COMPLETE', {});
 }
 
 // ============ RPC Action Handlers ============
@@ -641,7 +642,7 @@ async function processGenerationQueue(): Promise<void> {
  * Initialize models
  */
 rpc.register('INIT_MODELS', async (payload) => {
-  const { modelTypes = ['fast', 'image'] } = (payload as WorkerActionPayloads['INIT_MODELS']) || {};
+  const { modelTypes = ['fast', 'image'] } = payload || {};
   const results: Record<string, { success?: boolean }> = {};
 
   for (const modelType of modelTypes) {
@@ -659,7 +660,7 @@ rpc.register('INIT_MODELS', async (payload) => {
  * Generate text
  */
 rpc.register('GENERATE_TEXT', async (payload) => {
-  const { prompt, options = {} } = payload as WorkerActionPayloads['GENERATE_TEXT'];
+  const { prompt, options = {} } = payload;
   if (!prompt) {
     throw new Error('Prompt is required');
   }
@@ -670,7 +671,7 @@ rpc.register('GENERATE_TEXT', async (payload) => {
  * Generate image
  */
 rpc.register('GENERATE_IMAGE', async (payload) => {
-  const { prompt, options = {} } = payload as WorkerActionPayloads['GENERATE_IMAGE'];
+  const { prompt, options = {} } = payload;
   if (!prompt) {
     throw new Error('Prompt is required');
   }
@@ -684,7 +685,7 @@ rpc.register('GENERATE_IMAGE', async (payload) => {
  * Generate quip
  */
 rpc.register('GENERATE_QUIP', async (payload) => {
-  const { content } = payload as WorkerActionPayloads['GENERATE_QUIP'];
+  const { content } = payload;
   if (!content) {
     throw new Error('Content is required');
   }
@@ -695,7 +696,7 @@ rpc.register('GENERATE_QUIP', async (payload) => {
  * Generate outline
  */
 rpc.register('GENERATE_OUTLINE', async (payload) => {
-  const { subject, settings, numPages } = payload as WorkerActionPayloads['GENERATE_OUTLINE'];
+  const { subject, settings, numPages } = payload;
   if (!subject || !numPages) {
     throw new Error('Subject and numPages are required');
   }
@@ -710,49 +711,15 @@ rpc.register('GENERATE_OUTLINE', async (payload) => {
  * Start book generation
  */
 rpc.register('START_GENERATION', async (payload) => {
-  const { settings, outline, numPages } = payload as WorkerActionPayloads['START_GENERATION'];
-
-  // Store context for this generation session
-  generationSession.settings = settings;
-  generationSession.numPages = numPages;
-
-  // Reset state and create new AbortController for this generation session
-  generationSession.queue = [];
-  generationSession.isGenerating = false;
-  generationSession.generatedPages = [];
-  abortController = new AbortController();
-
-  // Queue all pages for generation
-  generationSession.queue = outline.map((pageOutline, idx) => ({
-    pageNum: idx,
-    pageOutline,
-  }));
-
-  // Start processing - queue is processed asynchronously and sequentially
-  // No need for artificial delays - the async/await pattern handles this naturally
-  processGenerationQueue();
-
-  return { queued: generationSession.queue.length };
+  const { settings, outline, numPages } = payload;
+  return await generationManager.start(settings, outline, numPages);
 });
 
 /**
  * Cancel generation
  */
 rpc.register('CANCEL_GENERATION', async () => {
-  // Abort the current generation
-  if (abortController) {
-    abortController.abort();
-    // Create a new AbortController for future generations
-    abortController = new AbortController();
-  }
-
-  // Synchronously clear the queue to prevent race conditions
-  generationSession.queue = [];
-  generationSession.isGenerating = false;
-
-  // Notify main thread that generation was cancelled
-  rpc.sendEvent('GENERATION_CANCELLED', {});
-
+  generationManager.cancel();
   return { cancelled: true };
 });
 
@@ -760,7 +727,7 @@ rpc.register('CANCEL_GENERATION', async () => {
  * Unload models
  */
 rpc.register('UNLOAD_MODELS', async (payload) => {
-  const { modelTypes = ['fast', 'quality', 'image'] } = (payload as WorkerActionPayloads['UNLOAD_MODELS']) || {};
+  const { modelTypes = ['fast', 'quality', 'image'] } = payload || {};
 
   for (const modelType of modelTypes) {
     if (modelType === 'fast') {

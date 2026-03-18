@@ -18,6 +18,8 @@ import type {
   ModelStatusType
 } from '../types';
 
+import { useProgressThrottle } from '../hooks/useProgressThrottle';
+
 /**
  * Model Status Enum
  */
@@ -141,19 +143,30 @@ export const ModelProvider = ({ children }: { children: ReactNode }) => {
   const blobUrlsRef = useRef<Set<string>>(new Set());
   // Event subscribers for worker events (replaces window.dispatchEvent)
   const workerEventSubscribersRef = useRef<Set<(data: { type: string; payload?: Record<string, unknown> }) => void>>(new Set());
-  // Throttle refs for progress updates (prevent render thrashing)
-  const progressThrottleRef = useRef<{
-    textLastUpdate: number;
-    imageLastUpdate: number;
-    textPending: { progress: number; status?: ModelStatusType } | null;
-    imagePending: { progress: number; status?: ModelStatusType } | null;
-  }>({
-    textLastUpdate: 0,
-    imageLastUpdate: 0,
-    textPending: null,
-    imagePending: null,
-  });
-  const PROGRESS_THROTTLE_MS = 150; // Max progress updates per 150ms
+  
+  /**
+   * Handle progress updates from worker
+   */
+  const onProgressUpdate = useCallback((modelType: string, progress: number, status?: ModelStatusType) => {
+    if (modelType === 'fast' || modelType === 'quality' || modelType === 'text') {
+      const setState = modelType === 'quality' ? setQualityTextModelState : setTextModelState;
+      setState(prev => ({
+        ...prev,
+        progress,
+        status: status || prev.status,
+        loading: progress < 100,
+      }));
+    } else if (modelType === 'image') {
+      setImageModelState(prev => ({
+        ...prev,
+        progress,
+        status: status || prev.status,
+        loading: progress < 100,
+      }));
+    }
+  }, []);
+
+  const { handleProgress } = useProgressThrottle(onProgressUpdate);
 
   /**
    * Detect WebGPU capabilities and device resources on mount
@@ -240,49 +253,8 @@ export const ModelProvider = ({ children }: { children: ReactNode }) => {
           const { modelType, progress, status } = payload || {};
           const progressNum = progress as number || 0;
           const statusStr = status as ModelStatusType | undefined;
-          const now = Date.now();
-
-          // Throttle progress updates to prevent render thrashing
-          // Always bypass throttle for 100% or READY status
-          const shouldBypassThrottle = progressNum >= 100 || statusStr === ModelStatus.READY;
-
-          if (modelType === 'fast' || modelType === 'quality') {
-            const timeSinceLastUpdate = now - progressThrottleRef.current.textLastUpdate;
-            
-            if (shouldBypassThrottle || timeSinceLastUpdate >= PROGRESS_THROTTLE_MS) {
-              // Update immediately
-              progressThrottleRef.current.textLastUpdate = now;
-              progressThrottleRef.current.textPending = null;
-              
-              setQualityTextModelState(prev => ({
-                ...prev,
-                progress: progressNum,
-                status: statusStr || prev.status,
-                loading: progressNum < 100,
-              }));
-            } else {
-              // Store pending update
-              progressThrottleRef.current.textPending = { progress: progressNum, status: statusStr };
-            }
-          } else if (modelType === 'image') {
-            const timeSinceLastUpdate = now - progressThrottleRef.current.imageLastUpdate;
-            
-            if (shouldBypassThrottle || timeSinceLastUpdate >= PROGRESS_THROTTLE_MS) {
-              // Update immediately
-              progressThrottleRef.current.imageLastUpdate = now;
-              progressThrottleRef.current.imagePending = null;
-              
-              setImageModelState(prev => ({
-                ...prev,
-                progress: progressNum,
-                status: statusStr || prev.status,
-                loading: progressNum < 100,
-              }));
-            } else {
-              // Store pending update
-              progressThrottleRef.current.imagePending = { progress: progressNum, status: statusStr };
-            }
-          }
+          
+          handleProgress(modelType as string, progressNum, statusStr);
           break;
         }
 
@@ -366,43 +338,8 @@ export const ModelProvider = ({ children }: { children: ReactNode }) => {
       }
     });
 
-    // Flush pending progress updates periodically
-    const throttleFlushInterval = setInterval(() => {
-      const now = Date.now();
-      
-      // Flush text progress if pending
-      if (progressThrottleRef.current.textPending) {
-        const { progress, status } = progressThrottleRef.current.textPending;
-        progressThrottleRef.current.textLastUpdate = now;
-        progressThrottleRef.current.textPending = null;
-        
-        setQualityTextModelState(prev => ({
-          ...prev,
-          progress,
-          status: status || prev.status,
-          loading: progress < 100,
-        }));
-      }
-      
-      // Flush image progress if pending
-      if (progressThrottleRef.current.imagePending) {
-        const { progress, status } = progressThrottleRef.current.imagePending;
-        progressThrottleRef.current.imageLastUpdate = now;
-        progressThrottleRef.current.imagePending = null;
-        
-        setImageModelState(prev => ({
-          ...prev,
-          progress,
-          status: status || prev.status,
-          loading: progress < 100,
-        }));
-      }
-    }, PROGRESS_THROTTLE_MS);
-
     // Cleanup on unmount
     return () => {
-      clearInterval(throttleFlushInterval);
-      
       // Revoke all blob URLs to prevent memory leaks
       blobUrlsRef.current.forEach(url => {
         try {

@@ -231,6 +231,17 @@ export function useBookGeneration({
               if (!prev) return prev;
               const newPages = [...(prev.pages || [])];
 
+              // Revoke old blob URL if it exists to prevent memory leaks
+              const oldPage = newPages[pageNum];
+              if (oldPage?.image?.imageUrl?.startsWith('blob:')) {
+                try {
+                  URL.revokeObjectURL(oldPage.image.imageUrl);
+                  generatedImageUrlsRef.current.delete(oldPage.image.imageUrl);
+                } catch (err) {
+                  console.warn('Failed to revoke old blob URL:', err);
+                }
+              }
+
               // Reconstruct image from buffer if needed
               let processedPageData = pageData;
               const imageData = pageData.image as unknown as { buffer?: ArrayBuffer; type?: string; imageUrl?: string; blob?: Blob; cached?: boolean } | null | undefined;
@@ -350,6 +361,22 @@ export function useBookGeneration({
       if (!prev) return prev;
       const newPages = [...(prev.pages || [])];
       if (newPages[pageNum]) {
+        // Revoke old blob URL if it exists to prevent memory leaks
+        const oldImage = newPages[pageNum].image;
+        if (oldImage?.imageUrl?.startsWith('blob:')) {
+          try {
+            URL.revokeObjectURL(oldImage.imageUrl);
+            generatedImageUrlsRef.current.delete(oldImage.imageUrl);
+          } catch (err) {
+            console.warn('Failed to revoke old blob URL in updatePageImage:', err);
+          }
+        }
+
+        // Add new URL to tracking if it's a blob
+        if (newImage.imageUrl.startsWith('blob:')) {
+          generatedImageUrlsRef.current.add(newImage.imageUrl);
+        }
+
         newPages[pageNum] = {
           ...newPages[pageNum],
           image: newImage,

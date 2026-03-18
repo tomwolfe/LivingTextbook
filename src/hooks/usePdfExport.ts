@@ -67,10 +67,9 @@ const calculateFitText = (
   const maxLines = Math.floor(availableHeight / (7 * lineHeight));
   
   if (splitText.length > maxLines && maxLines > 0) {
-    splitText = splitText.slice(0, maxLines);
-    // Add ellipsis to last line
-    const lastLine = splitText[splitText.length - 1];
-    splitText[splitText.length - 1] = lastLine.slice(0, -3) + '...';
+    // Leave room for truncation message
+    splitText = splitText.slice(0, maxLines - 1);
+    splitText.push("... [Text truncated for PDF to prevent overflow]");
   }
 
   return { fontSize: 7, splitText };
