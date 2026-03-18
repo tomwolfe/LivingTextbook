@@ -1,0 +1,177 @@
+.page-status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--surface-2, #f0f0f0);
+  border: 1px solid var(--border, #e0e0e0);
+  transition: all 0.2s ease;
+}
+
+.status-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.status-label {
+  color: var(--text-primary, #333);
+}
+
+.retry-count {
+  font-size: 10px;
+  color: var(--text-secondary, #666);
+  margin-left: 2px;
+}
+
+/* Status variants */
+.status-idle {
+  background: var(--surface-1, #f5f5f5);
+  color: var(--text-secondary, #666);
+}
+
+.status-queued {
+  background: var(--primary-light, #e3f2fd);
+  color: var(--primary, #1976d2);
+  border-color: var(--primary, #1976d2);
+}
+
+.status-generating {
+  background: var(--warning-light, #fff3e0);
+  color: var(--warning, #f57c00);
+  border-color: var(--warning, #f57c00);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.status-complete {
+  background: var(--success-light, #e8f5e9);
+  color: var(--success, #2e7d32);
+  border-color: var(--success, #2e7d32);
+}
+
+.status-error {
+  background: var(--error-light, #ffebee);
+  color: var(--error, #c62828);
+  border-color: var(--error, #c62828);
+}
+
+.status-unknown {
+  background: var(--surface-2, #f0f0f0);
+  color: var(--text-secondary, #666);
+}
+
+/* Error details */
+.error-details {
+  margin-left: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.error-message {
+  font-size: 11px;
+  margin: 0;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.retry-button,
+.cancel-button {
+  padding: 2px 8px;
+  font-size: 11px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.retry-button {
+  color: var(--error, #c62828);
+  border-color: var(--error, #c62828);
+}
+
+.retry-button:hover {
+  background: var(--error, #c62828);
+  color: white;
+}
+
+.cancel-button {
+  color: var(--warning, #f57c00);
+  border-color: var(--warning, #f57c00);
+}
+
+.cancel-button:hover {
+  background: var(--warning, #f57c00);
+  color: white;
+}
+
+/* Grid layout */
+.page-status-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px;
+  background: var(--surface-1, #f5f5f5);
+  border-radius: 8px;
+  margin: 12px 0;
+}
+
+/* Animations */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .page-status-indicator {
+    background: var(--surface-2, #2a2a2a);
+    border-color: var(--border, #444);
+  }
+
+  .status-idle {
+    background: var(--surface-1, #1f1f1f);
+    color: var(--text-secondary, #aaa);
+  }
+
+  .status-queued {
+    background: rgba(33, 150, 243, 0.2);
+    color: #64b5f6;
+    border-color: #64b5f6;
+  }
+
+  .status-generating {
+    background: rgba(255, 152, 0, 0.2);
+    color: #ffb74d;
+    border-color: #ffb74d;
+  }
+
+  .status-complete {
+    background: rgba(76, 175, 80, 0.2);
+    color: #81c784;
+    border-color: #81c784;
+  }
+
+  .status-error {
+    background: rgba(244, 67, 54, 0.2);
+    color: #e57373;
+    border-color: #e57373;
+  }
+
+  .error-message {
+    color: var(--text-secondary, #aaa);
+  }
+
+  .page-status-grid {
+    background: var(--surface-1, #1f1f1f);
+  }
+}

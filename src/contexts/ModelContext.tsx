@@ -15,8 +15,12 @@ import type {
   ImageResult,
   ImageGenerationOptions,
   TextGenerationOptions,
-  ModelStatusType
+  ModelStatusType,
+  AppError,
+  RetryConfig,
 } from '../types';
+import { withRetry, toAppError, DEFAULT_RETRY_CONFIG, isCancellation } from '../utils/errors';
+import { modelLogger } from '../utils/logger';
 
 import { useProgressThrottle } from '../hooks/useProgressThrottle';
 
@@ -363,7 +367,7 @@ export const ModelProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   /**
-   * Initialize text model via worker
+   * Initialize text model via worker with retry
    */
   const initTextModel = useCallback(async (modelType: 'fast' | 'quality' = 'fast'): Promise<boolean> => {
     if (!rpcRef.current) {
@@ -371,88 +375,124 @@ export const ModelProvider = ({ children }: { children: ReactNode }) => {
     }
 
     const isQuality = modelType === 'quality';
-
-    // Check storage quota before downloading
-    try {
-      const requirement = modelType === 'quality' ? 'quality' : 'fast';
-      await assertStorageAvailability(requirement);
-    } catch (err) {
-      console.error('Storage check failed:', err);
-      const setState = isQuality ? setQualityTextModelState : setTextModelState;
-      setState(prev => ({
-        ...prev,
-        status: ModelStatus.ERROR,
-        loading: false,
-        error: `Insufficient storage: ${(err as Error).message}`,
-      }));
-      return false;
-    }
-
     const setState = isQuality ? setQualityTextModelState : setTextModelState;
-    setState(prev => ({ ...prev, status: ModelStatus.LOADING, loading: true, error: null }));
+
+    // Inner function that performs the actual initialization
+    const performInit = async (): Promise<boolean> => {
+      // Check storage quota before downloading
+      try {
+        const requirement = modelType === 'quality' ? 'quality' : 'fast';
+        await assertStorageAvailability(requirement);
+      } catch (err) {
+        modelLogger.error('Storage check failed', { error: err as Error });
+        setState(prev => ({
+          ...prev,
+          status: 'Error',
+          loading: false,
+          error: `Insufficient storage: ${(err as Error).message}`,
+        }));
+        return false;
+      }
+
+      setState(prev => ({ ...prev, status: 'Loading', loading: true, error: null }));
+
+      try {
+        const result = await rpcRef.current!.send('INIT_MODELS', {
+          modelTypes: [modelType],
+        });
+
+        return (result as Record<string, { success?: boolean }>)?.[modelType]?.success || false;
+      } catch (err) {
+        modelLogger.error('Text model initialization failed', { error: err as Error });
+        throw err; // Re-throw for retry logic to handle
+      }
+    };
 
     try {
-      const result = await rpcRef.current.send('INIT_MODELS', {
-        modelTypes: [modelType],
-      });
-
-      return (result as Record<string, { success?: boolean }>)?.[modelType]?.success || false;
+      // Use retry logic for transient failures
+      const success = await withRetry(
+        performInit,
+        DEFAULT_RETRY_CONFIG,
+        (attempt, error, delayMs) => {
+          modelLogger.warn(`Model init retry ${attempt}/${DEFAULT_RETRY_CONFIG.maxRetries} in ${delayMs}ms`, { error });
+        }
+      );
+      return success;
     } catch (err) {
-      console.error('Failed to initialize text model:', err);
-      const setState = isQuality ? setQualityTextModelState : setTextModelState;
+      // Final error after all retries
+      const appError = toAppError(err, 'Text model initialization');
       setState(prev => ({
         ...prev,
-        status: ModelStatus.ERROR,
+        status: 'Error',
         loading: false,
-        error: (err as Error).message || 'Failed to load text model',
+        error: appError.message,
       }));
       return false;
     }
   }, []);
 
   /**
-   * Initialize image model via worker
+   * Initialize image model via worker with retry
    */
   const initImageModel = useCallback(async (): Promise<boolean> => {
     if (!rpcRef.current) {
       throw new Error('Worker not initialized');
     }
 
-    // Check storage quota before downloading
+    // Inner function that performs the actual initialization
+    const performInit = async (): Promise<boolean> => {
+      // Check storage quota before downloading
+      try {
+        await assertStorageAvailability('image');
+      } catch (err) {
+        modelLogger.error('Storage check failed', { error: err as Error });
+        setImageModelState(prev => ({
+          ...prev,
+          status: 'Error',
+          loading: false,
+          error: `Insufficient storage: ${(err as Error).message}`,
+        }));
+        return false;
+      }
+
+      setImageModelState(prev => ({ ...prev, status: 'Loading', loading: true, error: null }));
+
+      try {
+        const result = await rpcRef.current!.send('INIT_MODELS', {
+          modelTypes: ['image'],
+        });
+        return (result as Record<string, { success?: boolean }>)?.image?.success || false;
+      } catch (err) {
+        modelLogger.error('Image model initialization failed', { error: err as Error });
+        throw err; // Re-throw for retry logic to handle
+      }
+    };
+
     try {
-      await assertStorageAvailability('image');
+      // Use retry logic for transient failures
+      const success = await withRetry(
+        performInit,
+        DEFAULT_RETRY_CONFIG,
+        (attempt, error, delayMs) => {
+          modelLogger.warn(`Image model init retry ${attempt}/${DEFAULT_RETRY_CONFIG.maxRetries} in ${delayMs}ms`, { error });
+        }
+      );
+      return success;
     } catch (err) {
-      console.error('Storage check failed:', err);
+      // Final error after all retries
+      const appError = toAppError(err, 'Image model initialization');
       setImageModelState(prev => ({
         ...prev,
-        status: ModelStatus.ERROR,
+        status: 'Error',
         loading: false,
-        error: `Insufficient storage: ${(err as Error).message}`,
-      }));
-      return false;
-    }
-
-    setImageModelState(prev => ({ ...prev, status: ModelStatus.LOADING, loading: true, error: null }));
-
-    try {
-      const result = await rpcRef.current.send('INIT_MODELS', {
-        modelTypes: ['image'],
-      });
-      return (result as Record<string, { success?: boolean }>)?.image?.success || false;
-    } catch (err) {
-      console.error('Failed to initialize image model:', err);
-      setImageModelState(prev => ({
-        ...prev,
-        status: ModelStatus.ERROR,
-        loading: false,
-        error: (err as Error).message || 'Failed to load image model',
+        error: appError.message,
       }));
       return false;
     }
   }, []);
 
   /**
-   * Generate text from a prompt via worker
+   * Generate text from a prompt via worker with retry
    */
   const generateText = useCallback(async (prompt: string, options: TextGenerationOptions = {}): Promise<string | null> => {
     if (!rpcRef.current) {
@@ -467,30 +507,51 @@ export const ModelProvider = ({ children }: { children: ReactNode }) => {
       setState(prev => ({ ...prev, loading: true, status: 'Generating Content...' as ModelStatusType }));
     }
 
+    // Inner function that performs the actual generation
+    const performGeneration = async (): Promise<string> => {
+      try {
+        const result = await rpcRef.current!.send('GENERATE_TEXT', {
+          prompt,
+          options: {
+            complexity,
+            ...generationOptions,
+          },
+        });
+
+        return result as string;
+      } catch (err) {
+        modelLogger.error('Text generation failed', { error: err as Error });
+        throw err; // Re-throw for retry logic to handle
+      }
+    };
+
     try {
-      const result = await rpcRef.current.send('GENERATE_TEXT', {
-        prompt,
-        options: {
-          complexity,
-          ...generationOptions,
-        },
-      });
+      // Use retry logic for transient failures (but not for cancellations)
+      const result = await withRetry(
+        performGeneration,
+        { ...DEFAULT_RETRY_CONFIG, maxRetries: 1 }, // Fewer retries for generation
+        (attempt, error, delayMs) => {
+          if (!isCancellation(error)) {
+            modelLogger.warn(`Text generation retry ${attempt}/1 in ${delayMs}ms`, { error });
+          }
+        }
+      );
 
       if (!skipStatus) {
         const setState = isQuality ? setQualityTextModelState : setTextModelState;
-        setState(prev => ({ ...prev, loading: false, status: ModelStatus.READY }));
+        setState(prev => ({ ...prev, loading: false, status: 'Ready' }));
       }
 
-      return result as string;
+      return result;
     } catch (err) {
-      console.error('Text generation error:', err);
       if (!skipStatus) {
+        const appError = toAppError(err, 'Text generation');
         const setState = isQuality ? setQualityTextModelState : setTextModelState;
         setState(prev => ({
           ...prev,
           loading: false,
-          status: ModelStatus.ERROR,
-          error: (err as Error).message || 'Generation failed',
+          status: 'Error',
+          error: appError.message,
         }));
       }
       return null;
@@ -516,7 +577,7 @@ export const ModelProvider = ({ children }: { children: ReactNode }) => {
   }, [generateText]);
 
   /**
-   * Generate image from a prompt via worker
+   * Generate image from a prompt via worker with retry
    */
   const generateImageFromPrompt = useCallback(async (prompt: string, options: ImageGenerationOptions = {}): Promise<ImageResult | null> => {
     if (!rpcRef.current) {
@@ -531,43 +592,64 @@ export const ModelProvider = ({ children }: { children: ReactNode }) => {
       try {
         const cachedBlob = await getCachedImage(cachePrompt);
         if (cachedBlob) {
-          console.log('[ImageCache] Hit for prompt:', prompt.substring(0, 50));
+          modelLogger.debug('Image cache hit', { prompt: prompt.substring(0, 50) });
           const imageUrl = URL.createObjectURL(cachedBlob);
           blobUrlsRef.current.add(imageUrl);
           return { imageUrl, blob: cachedBlob, cached: true };
         }
       } catch (err) {
-        console.warn('[ImageCache] Failed to get cached image:', err);
+        modelLogger.warn('Cache lookup failed', { error: err as Error });
       }
     }
 
     setImageModelState(prev => ({ ...prev, loading: true, status: 'Generating Image...' as ModelStatusType }));
 
-    try {
-      const result = await rpcRef.current.send('GENERATE_IMAGE', {
-        prompt,
-        options: { negativePrompt, useCache: false }, // Cache already checked above
-      });
+    // Inner function that performs the actual generation
+    const performGeneration = async (): Promise<ImageResult> => {
+      try {
+        const result = await rpcRef.current!.send('GENERATE_IMAGE', {
+          prompt,
+          options: { negativePrompt, useCache: false }, // Cache already checked above
+        });
 
-      // Worker returns ArrayBuffer via zero-copy transfer - reconstruct blob on main thread
-      const resultTyped = result as { buffer?: ArrayBuffer; type?: string; cached?: boolean } | null;
-      if (resultTyped?.buffer) {
-        const blob = new Blob([resultTyped.buffer], { type: resultTyped.type || 'image/png' });
-        const imageUrl = URL.createObjectURL(blob);
-        blobUrlsRef.current.add(imageUrl);
+        // Worker returns ArrayBuffer via zero-copy transfer - reconstruct blob on main thread
+        const resultTyped = result as { buffer?: ArrayBuffer; type?: string; cached?: boolean } | null;
+        if (resultTyped?.buffer) {
+          const blob = new Blob([resultTyped.buffer], { type: resultTyped.type || 'image/png' });
+          const imageUrl = URL.createObjectURL(blob);
+          blobUrlsRef.current.add(imageUrl);
 
-        setImageModelState(prev => ({ ...prev, loading: false, status: ModelStatus.READY }));
-        return { imageUrl, blob, cached: resultTyped.cached || false };
-      } else {
-        throw new Error('Image generation failed');
+          return { imageUrl, blob, cached: resultTyped.cached || false };
+        } else {
+          throw new Error('Image generation failed');
+        }
+      } catch (err) {
+        modelLogger.error('Image generation failed', { error: err as Error });
+        throw err; // Re-throw for retry logic to handle
       }
+    };
+
+    try {
+      // Use retry logic for transient failures
+      const result = await withRetry(
+        performGeneration,
+        { ...DEFAULT_RETRY_CONFIG, maxRetries: 1 },
+        (attempt, error, delayMs) => {
+          if (!isCancellation(error)) {
+            modelLogger.warn(`Image generation retry ${attempt}/1 in ${delayMs}ms`, { error });
+          }
+        }
+      );
+
+      setImageModelState(prev => ({ ...prev, loading: false, status: 'Ready' }));
+      return result;
     } catch (err) {
-      console.error('Image generation error:', err);
+      const appError = toAppError(err, 'Image generation');
       setImageModelState(prev => ({
         ...prev,
         loading: false,
-        status: ModelStatus.ERROR,
-        error: (err as Error).message || 'Image generation failed',
+        status: 'Error',
+        error: appError.message,
       }));
       return null;
     }

@@ -1,11 +1,42 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import type { 
-  Book, 
-  OutlineItem, 
-  BookSettings, 
+import type {
+  Book,
+  OutlineItem,
+  BookSettings,
   ImageResult,
-  UseBookGenerationReturn 
+  UseBookGenerationReturn,
+  PageState,
+  PageStatus,
+  AppError,
 } from '../types';
+import { toAppError, isCancellation } from '../utils/errors';
+import { generationLogger } from '../utils/logger';
+
+/**
+ * Create initial page state
+ */
+function createInitialPageState(): PageState {
+  return {
+    status: 'idle',
+    content: undefined,
+    image: undefined,
+    quip: undefined,
+    error: undefined,
+    retryCount: 0,
+  };
+}
+
+/**
+ * Create book with page states
+ */
+function createBookWithStates(subject: string, numPages: number, settings: BookSettings): Book & { pageStates: PageState[] } {
+  return {
+    subject,
+    pages: Array(numPages).fill(null),
+    settings: { ...settings },
+    pageStates: Array.from({ length: numPages }, () => createInitialPageState()),
+  };
+}
 
 /**
  * useBookGeneration Hook
@@ -28,15 +59,33 @@ export function useBookGeneration({
   cancelBookGeneration?: () => Promise<void>;
   subscribeToWorkerEvents?: (callback: (data: { type: string; payload?: Record<string, unknown> }) => void) => () => void;
 } = {}): UseBookGenerationReturn {
-  const [bookData, setBookData] = useState<Book | null>(null);
+  const [bookData, setBookData] = useState<(Book & { pageStates?: PageState[] }) | null>(null);
   const [outline, setOutline] = useState<OutlineItem[] | null>(null);
-  const [generatingPages, setGeneratingPages] = useState<number[]>([]);
-  const [generationError, setGenerationError] = useState<string | null>(null);
+  const [generationError, setGenerationError] = useState<AppError | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
 
   const pendingGenerationsRef = useRef<Set<number>>(new Set());
   // Track generated image URLs to prevent memory leaks
   const generatedImageUrlsRef = useRef<Set<string>>(new Set());
+
+  /**
+   * Get current page status
+   */
+  const getPageStatus = useCallback((pageNum: number): PageStatus => {
+    if (!bookData?.pageStates?.[pageNum]) {
+      return 'idle';
+    }
+    return bookData.pageStates[pageNum].status;
+  }, [bookData]);
+
+  /**
+   * Get generating pages (for backward compatibility)
+   */
+  const generatingPages = bookData?.pageStates
+    ? bookData.pageStates
+        .map((page, idx) => (page.status === 'generating' ? idx : -1))
+        .filter(idx => idx !== -1)
+    : [];
 
   /**
    * Extract JSON array from LLM response using robust bracket matching
@@ -219,7 +268,17 @@ export function useBookGeneration({
         case 'PAGE_START': {
           const { pageNum } = payload || {};
           if (pageNum !== undefined) {
-            setGeneratingPages(prev => [...prev, pageNum]);
+            generationLogger.debug(`Page ${pageNum} started generation`);
+            setBookData(prev => {
+              if (!prev || !prev.pageStates) return prev;
+              const newPageStates = [...prev.pageStates];
+              newPageStates[pageNum] = {
+                ...newPageStates[pageNum],
+                status: 'generating',
+                error: undefined,
+              };
+              return { ...prev, pageStates: newPageStates };
+            });
           }
           break;
         }
@@ -227,6 +286,7 @@ export function useBookGeneration({
         case 'PAGE_COMPLETE': {
           const { pageNum, pageData } = payload || {};
           if (pageNum !== undefined && pageData) {
+            generationLogger.debug(`Page ${pageNum} generation complete`);
             setBookData(prev => {
               if (!prev) return prev;
               const newPages = [...(prev.pages || [])];
@@ -238,7 +298,7 @@ export function useBookGeneration({
                   URL.revokeObjectURL(oldPage.image.imageUrl);
                   generatedImageUrlsRef.current.delete(oldPage.image.imageUrl);
                 } catch (err) {
-                  console.warn('Failed to revoke old blob URL:', err);
+                  generationLogger.warn('Failed to revoke old blob URL', { error: err as Error });
                 }
               }
 
@@ -260,31 +320,56 @@ export function useBookGeneration({
                     },
                   };
                 } catch (err) {
-                  console.error('Failed to reconstruct image from buffer:', err);
+                  generationLogger.error('Failed to reconstruct image from buffer', err as Error);
                 }
               }
 
               newPages[pageNum] = processedPageData;
-              return { ...prev, pages: newPages };
+
+              // Update page state
+              const newPageStates = [...(prev.pageStates || [])];
+              const currentState = newPageStates[pageNum];
+              newPageStates[pageNum] = {
+                status: 'complete',
+                content: pageData.content,
+                image: processedPageData.image,
+                quip: pageData.quip,
+                settings: pageData.settings,
+                retryCount: currentState?.retryCount || 0,
+              };
+
+              return { ...prev, pages: newPages, pageStates: newPageStates };
             });
-            setGeneratingPages(prev => prev.filter(p => p !== pageNum));
           }
           break;
         }
 
         case 'PAGE_ERROR': {
           const { pageNum, error } = payload || {};
-          console.error(`Page ${pageNum} error:`, error);
-          setGenerationError(error || 'Page generation failed');
-          setGeneratingPages(prev => prev.filter(p => p !== pageNum));
+          if (pageNum === undefined) break;
+          
+          const appError = toAppError(new Error(error || 'Page generation failed'), `Page ${pageNum}`);
+          generationLogger.error(`Page ${pageNum} error`, { error: appError });
+
+          setGenerationError(appError);
+          setBookData(prev => {
+            if (!prev || !prev.pageStates) return prev;
+            const newPageStates = [...prev.pageStates];
+            newPageStates[pageNum] = {
+              ...newPageStates[pageNum],
+              status: 'error',
+              error: error || 'Page generation failed',
+            };
+            return { ...prev, pageStates: newPageStates };
+          });
           break;
         }
 
         case 'QUEUE_COMPLETE':
         case 'GENERATION_CANCELLED':
           pendingGenerationsRef.current.clear();
-          setGeneratingPages([]);
           setIsGenerating(false);
+          generationLogger.info('Generation queue complete');
           break;
 
         default:
@@ -307,34 +392,42 @@ export function useBookGeneration({
       throw new Error('Missing required parameters or functions');
     }
 
+    generationLogger.info(`Starting book generation: "${settings.subject}" (${numPages} pages)`);
+
     // Reset state
     setBookData(null);
     setOutline(null);
     setGenerationError(null);
-    setGeneratingPages([]);
     pendingGenerationsRef.current.clear();
     setIsGenerating(true);
 
     try {
       // Step 1: Generate outline
+      generationLogger.debug('Generating outline...');
       const outlineResponse = await generateOutline(settings.subject, settings, numPages);
       const parsedOutline = parseOutline(outlineResponse, numPages);
       setOutline(parsedOutline);
 
-      // Step 2: Initialize book data structure
-      setBookData({
-        subject: settings.subject,
-        pages: Array(numPages).fill(null),
-        settings: { ...settings }
-      });
+      // Step 2: Initialize book data structure with page states
+      const initialBook = createBookWithStates(settings.subject, numPages, settings);
+      // Mark all pages as queued
+      initialBook.pageStates = initialBook.pageStates.map((state, idx) => ({
+        ...state,
+        status: idx < parsedOutline.length ? 'queued' : 'idle',
+      }));
+      setBookData(initialBook);
 
       // Step 3: Start generation in worker
-      // The worker will process the queue asynchronously - no need for resume call
+      generationLogger.debug('Starting worker generation...');
       await startBookGeneration(settings, parsedOutline, numPages);
 
     } catch (err) {
-      console.error('Generation failed:', err);
-      setGenerationError((err as Error).message || 'Generation failed');
+      const appError = toAppError(err, 'Book generation');
+      generationLogger.error('Generation failed', appError);
+      
+      if (!isCancellation(err)) {
+        setGenerationError(appError);
+      }
       setBookData(null);
       setIsGenerating(false);
       throw err;
@@ -345,10 +438,11 @@ export function useBookGeneration({
    * Cancel ongoing generation
    */
   const cancelGeneration = useCallback(async (): Promise<void> => {
+    generationLogger.info('Cancelling generation');
+    
     if (cancelBookGeneration) {
       await cancelBookGeneration();
     }
-    setGeneratingPages([]);
     setIsGenerating(false);
     pendingGenerationsRef.current.clear();
   }, [cancelBookGeneration]);
@@ -387,22 +481,65 @@ export function useBookGeneration({
   }, []);
 
   /**
+   * Load a saved book and hydrate page states
+   */
+  const loadBook = useCallback((book: Book): void => {
+    generationLogger.info('Loading saved book', { subject: book.subject, pages: book.pages.length });
+
+    // Revoke any existing generated image URLs first
+    generatedImageUrlsRef.current.forEach(url => {
+      try {
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        generationLogger.warn('Failed to revoke blob URL', { error: err as Error });
+      }
+    });
+    generatedImageUrlsRef.current.clear();
+
+    // Hydrate page states from saved book data
+    const pageStates: PageState[] = book.pages.map((page, idx) => {
+      const state: PageState = {
+        status: page ? 'complete' : 'idle',
+        content: page?.content,
+        image: page?.image,
+        quip: page?.quip,
+        settings: page?.settings,
+        retryCount: 0,
+      };
+
+      // Track blob URLs from loaded images
+      if (page?.image?.imageUrl?.startsWith('blob:')) {
+        generatedImageUrlsRef.current.add(page.image.imageUrl);
+      }
+
+      return state;
+    });
+
+    setBookData({ ...book, pageStates });
+    setOutline(null);
+    setGenerationError(null);
+    setIsGenerating(false);
+    pendingGenerationsRef.current.clear();
+  }, []);
+
+  /**
    * Clear book data and revoke all generated image URLs
    */
   const clearBook = useCallback((): void => {
+    generationLogger.debug('Clearing book data');
+
     // Revoke all generated image URLs to prevent memory leaks
     generatedImageUrlsRef.current.forEach(url => {
       try {
         URL.revokeObjectURL(url);
       } catch (err) {
-        console.warn('Failed to revoke blob URL:', err);
+        generationLogger.warn('Failed to revoke blob URL', { error: err as Error });
       }
     });
     generatedImageUrlsRef.current.clear();
 
     setBookData(null);
     setOutline(null);
-    setGeneratingPages([]);
     setGenerationError(null);
     setIsGenerating(false);
     pendingGenerationsRef.current.clear();
@@ -437,9 +574,11 @@ export function useBookGeneration({
     cancelGeneration,
     updatePageImage,
     clearBook,
+    loadBook,
 
     // Utilities
     parseOutline,
+    getPageStatus,
   };
 }
 

@@ -5,7 +5,27 @@
 // ============ Book Data Types ============
 
 /**
- * Represents a single page in the book
+ * Page generation status states
+ */
+export type PageStatus = 'idle' | 'queued' | 'generating' | 'complete' | 'error';
+
+/**
+ * Represents a single page's generation state
+ */
+export interface PageState {
+  status: PageStatus;
+  content?: string;
+  image?: ImageResult;
+  imagePrompt?: string;
+  quip?: string | null;
+  settings?: BookSettings;
+  error?: string;
+  retryCount?: number;
+}
+
+/**
+ * Represents a single page in the book (legacy alias for backward compatibility)
+ * @deprecated Use PageState for new code
  */
 export interface Page {
   title: string;
@@ -205,6 +225,50 @@ export interface WorkerActionPayloads {
   GET_MODEL_STATUS: Record<string, never>;
 }
 
+// ============ Worker Event Types ============
+
+/**
+ * Worker-generated event types for better typing
+ */
+export type WorkerEventType =
+  | 'WORKER_READY'
+  | 'MODEL_PROGRESS'
+  | 'MODEL_LOADED'
+  | 'MODEL_ERROR'
+  | 'MODEL_UNLOADED'
+  | 'GENERATION_PROGRESS'
+  | 'PAGE_START'
+  | 'PAGE_COMPLETE'
+  | 'PAGE_ERROR'
+  | 'QUEUE_COMPLETE'
+  | 'GENERATION_CANCELLED';
+
+/**
+ * Worker event payload types
+ */
+export interface WorkerEventPayloads {
+  WORKER_READY: { timestamp: number; version: string; features: string[] };
+  MODEL_PROGRESS: { modelType: string; progress: number; status?: string };
+  MODEL_LOADED: { modelType: string; device: string; modelName?: string };
+  MODEL_ERROR: { modelType: string; error: string };
+  MODEL_UNLOADED: { modelType: string };
+  GENERATION_PROGRESS: { stage: string; status: string };
+  PAGE_START: { pageNum: number };
+  PAGE_COMPLETE: { pageNum: number; pageData: { title: string; content: string; image?: unknown; quip?: string | null; settings?: BookSettings } };
+  PAGE_ERROR: { pageNum: number; error: string };
+  QUEUE_COMPLETE: Record<string, never>;
+  GENERATION_CANCELLED: Record<string, never>;
+}
+
+/**
+ * Typed worker event
+ */
+export interface TypedWorkerEvent<T extends WorkerEventType = WorkerEventType> {
+  type: T;
+  payload: WorkerEventPayloads[T];
+  timestamp: number;
+}
+
 // ============ Generation Options ============
 
 /**
@@ -322,13 +386,15 @@ export interface UseBookGenerationReturn {
   bookData: Book | null;
   outline: OutlineItem[] | null;
   generatingPages: number[];
-  generationError: string | null;
+  generationError: AppError | null;
   isGenerating: boolean;
   startGeneration: (settings: BookSettings, numPages?: number) => Promise<void>;
   cancelGeneration: () => Promise<void>;
   updatePageImage: (pageNum: number, newImage: ImageResult) => void;
   clearBook: () => void;
   parseOutline: (response: string, numPages?: number) => OutlineItem[];
+  getPageStatus: (pageNum: number) => PageStatus;
+  loadBook: (book: Book) => void;
 }
 
 /**
@@ -378,6 +444,32 @@ export interface UseModelReturn {
 }
 
 // ============ Utility Types ============
+
+/**
+ * Error types for standardized error handling
+ */
+export type ErrorType = 'MODEL' | 'NETWORK' | 'STORAGE' | 'GENERATION' | 'VALIDATION' | 'UNKNOWN';
+
+/**
+ * Standardized application error
+ */
+export interface AppError {
+  type: ErrorType;
+  message: string;
+  retryable: boolean;
+  cause?: Error;
+  code?: string;
+}
+
+/**
+ * Retry configuration
+ */
+export interface RetryConfig {
+  maxRetries: number;
+  initialDelayMs: number;
+  maxDelayMs: number;
+  backoffMultiplier: number;
+}
 
 /**
  * Result type for async operations
