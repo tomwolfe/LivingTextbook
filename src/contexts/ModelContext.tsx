@@ -32,6 +32,7 @@ import {
   StorageService,
   ModelStates,
 } from '../core';
+import GenerationWorker from '../workers/GenerationWorker?worker';
 
 // Re-export context types for backward compatibility
 export const ModelStatus = {
@@ -142,8 +143,12 @@ export const ModelProvider: React.FC<ModelProviderProps> = ({
   useEffect(() => {
     // Initialize worker service
     const workerService = getWorkerService();
-    const url = workerUrl || new URL('../workers/GenerationWorker.ts', import.meta.url).href;
-    workerService.initialize(url);
+    if (workerUrl) {
+      workerService.initialize(workerUrl);
+    } else {
+      const worker = new GenerationWorker();
+      workerService.initializeWithWorker(worker);
+    }
     workerServiceRef.current = workerService;
 
     // Initialize other services

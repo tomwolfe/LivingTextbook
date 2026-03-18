@@ -56,6 +56,36 @@ export class WorkerService {
   }
 
   /**
+   * Initialize with an existing Worker instance (e.g., from Vite ?worker import)
+   */
+  initializeWithWorker(workerInstance: Worker): void {
+    if (this.isInitialized) {
+      workerLogger.warn('Worker already initialized');
+      return;
+    }
+
+    try {
+      this.worker = workerInstance;
+      this.rpc = new MainThreadRPC(this.worker);
+
+      // Set up event handler to forward worker events to subscribers
+      this.rpc.setWorkerMessageHandler((data) => {
+        const { type, payload } = data as { type: string; payload?: Record<string, unknown> };
+
+        if (type && type !== 'RPC_RESPONSE') {
+          this.notifySubscribers(type as WorkerEventType, payload as WorkerEventPayloads[WorkerEventType]);
+        }
+      });
+
+      this.isInitialized = true;
+      workerLogger.info('Worker initialized from instance');
+    } catch (error) {
+      workerLogger.error('Failed to initialize worker', error as Error);
+      throw error;
+    }
+  }
+
+  /**
    * Send an RPC request to the worker
    */
   async send<T extends WorkerAction>(
