@@ -70,22 +70,6 @@ function AppContent() {
     setDarkMode((prev: boolean) => !prev);
   }, []);
 
-  /**
-   * Handle image regeneration updates from BookRenderer
-   */
-  useEffect(() => {
-    const handleImageUpdate = (event: Event) => {
-      const customEvent = event as CustomEvent<{ currentPage: number; newImage: ImageResult }>;
-      const { currentPage: pageNum, newImage } = customEvent.detail;
-      updatePageImage(pageNum, newImage);
-    };
-
-    window.addEventListener('book-image-updated', handleImageUpdate as EventListener);
-    return () => {
-      window.removeEventListener('book-image-updated', handleImageUpdate as EventListener);
-    };
-  }, [updatePageImage]);
-
   const handleGenerate = useCallback(async () => {
     if (!settings.subject) return;
 
@@ -203,6 +187,7 @@ function AppContent() {
               onPageChange={handlePageChange}
               hasOutline={outline !== null}
               generateImage={generateImage}
+              onImageUpdated={updatePageImage}
             />
           </ErrorBoundary>
         </section>

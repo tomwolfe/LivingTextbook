@@ -3,7 +3,89 @@
  * Extracted from hooks to enable easy model swapping and configuration updates
  */
 
-export const config = {
+import type { ReadingLevel } from './types';
+
+/**
+ * Text generation configuration
+ */
+interface TextGenConfig {
+  fastModelId: string;
+  qualityModelId: string;
+  fastModelIdCPU: string;
+  qualityModelIdCPU: string;
+  complexityThreshold: number;
+  maxNewTokens: number;
+  temperature: number;
+  doSample: boolean;
+}
+
+/**
+ * Image generation configuration
+ */
+interface ImageGenConfig {
+  modelId: string;
+  tokenizerModel: string;
+  width: number;
+  height: number;
+  seedRange: { min: number; max: number };
+  speedModeWidth: number;
+  speedModeHeight: number;
+  speedModeSteps: number;
+  extremeSpeedModeWidth: number;
+  extremeSpeedModeHeight: number;
+}
+
+/**
+ * Transformers.js environment settings
+ */
+interface TransformersConfig {
+  allowLocalModels: boolean;
+  useBrowserCache: boolean;
+  logLevel: string;
+}
+
+/**
+ * WebGPU detection settings
+ */
+interface WebGPUConfig {
+  requireShaderF16: boolean;
+}
+
+/**
+ * Default book settings
+ */
+interface DefaultSettings {
+  subject: string;
+  tone: number;
+  style: number;
+  complexity: number;
+  level: ReadingLevel;
+}
+
+/**
+ * UI/UX configuration
+ */
+interface UIConfig {
+  defaultSettings: DefaultSettings;
+  levelOptions: ReadingLevel[];
+  defaultNumPages: number;
+}
+
+/**
+ * Main configuration interface
+ */
+export interface Config {
+  textGen: TextGenConfig;
+  imageGen: ImageGenConfig;
+  transformers: TransformersConfig;
+  webgpu: WebGPUConfig;
+  ui: UIConfig;
+}
+
+/**
+ * Application configuration object
+ */
+export const config: Config = {
   // Text Generation Model Configuration
   textGen: {
     // Fast model (quantized for smaller footprint) - for low complexity

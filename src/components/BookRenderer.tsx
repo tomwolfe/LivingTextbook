@@ -9,6 +9,7 @@ import './BookRenderer.css';
  */
 interface BookRendererExtendedProps extends BookRendererProps {
   fullBook?: Book | null;
+  onImageUpdated?: (pageNum: number, newImage: ImageResult) => void;
 }
 
 /**
@@ -23,6 +24,7 @@ const BookRenderer: React.FC<BookRendererExtendedProps> = ({
   hasOutline,
   generateImage,
   fullBook,
+  onImageUpdated,
 }) => {
   const [isFlipping, setIsFlipping] = useState(false);
   const [regeneratingImage, setRegeneratingImage] = useState(false);
@@ -63,11 +65,10 @@ const BookRenderer: React.FC<BookRendererExtendedProps> = ({
       const result = await generateImage(imagePrompt, { skipCache: true });
 
       if (result && result.imageUrl) {
-        // Update book data with new image - this will be handled by parent component
-        // For now, we'll just trigger a re-render by updating local state
-        window.dispatchEvent(new CustomEvent('book-image-updated', {
-          detail: { currentPage, newImage: result }
-        }));
+        // Update book data with new image via parent callback
+        if (onImageUpdated) {
+          onImageUpdated(currentPage, result);
+        }
         setImageError(false);
       }
     } catch (err) {
@@ -76,7 +77,7 @@ const BookRenderer: React.FC<BookRendererExtendedProps> = ({
     } finally {
       setRegeneratingImage(false);
     }
-  }, [bookData, generateImage, currentPage]);
+  }, [bookData, generateImage, currentPage, onImageUpdated]);
 
   /**
    * Handle image load error

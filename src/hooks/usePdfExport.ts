@@ -11,8 +11,14 @@ import type { UsePdfExportReturn } from '../types';
 const blobToBase64 = (blob: Blob): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result as string);
-    reader.onerror = reject;
+    reader.onloadend = () => {
+      if (reader.result) {
+        resolve(reader.result as string);
+      } else {
+        reject(new Error('FileReader returned null'));
+      }
+    };
+    reader.onerror = () => reject(new Error('FileReader error'));
     reader.readAsDataURL(blob);
   });
 };
@@ -183,8 +189,15 @@ export function usePdfExport({ bookData }: { bookData?: Book | null } = {}): Use
         if (!page) continue;
 
         // Yield to main thread between pages to prevent freezing
-        if (i > 0 && i % 2 === 0) {
-          await sleep(0);
+        // Use requestAnimationFrame for better UI repaint, fallback to sleep
+        if (i > 0) {
+          await new Promise(resolve => {
+            if (typeof requestAnimationFrame !== 'undefined') {
+              requestAnimationFrame(() => resolve(null));
+            } else {
+              setTimeout(resolve, 10);
+            }
+          });
         }
 
         // Update progress
@@ -210,7 +223,7 @@ export function usePdfExport({ bookData }: { bookData?: Book | null } = {}): Use
         if (page.image?.blob) {
           try {
             // Yield to main thread before image processing
-            await sleep(0);
+            await sleep(10);
             base64String = await blobToBase64(page.image.blob);
             if (base64String) {
               const imageHeight = contentWidth;
