@@ -510,28 +510,28 @@ export function useModelStore<T>(selector: (states: ModelContextState) => T): T 
   }
 
   const service = serviceRef.current;
-  
+
   // useSyncExternalStore subscribes to ModelLifecycleService state changes
   // and only re-renders when the selected value changes (shallow comparison)
   const modelStates = useSyncExternalStore(
-    // Subscribe function
+    // Subscribe function - returns unsubscribe function
     (callback) => service.subscribeState(callback),
-    // Get current value (for current render)
-    () => service.getStates(),
+    // Get current value (for current render) - must return stable reference
+    () => service.getSnapshot(),
     // Get server value (same as client for this use case)
-    () => service.getStates()
+    () => service.getSnapshot()
   );
-  
+
   // Combine model states with other context values
-  const fullState: ModelContextState = {
+  const fullState: ModelContextState = useMemo(() => ({
     ...modelStates,
     speedMode: stateContext.speedMode,
     deviceResources: stateContext.deviceResources,
     webgpuCapabilities: stateContext.webgpuCapabilities,
     isWebGPUSupported: stateContext.isWebGPUSupported,
     storageStatus: stateContext.storageStatus,
-  };
-  
+  }), [modelStates, stateContext]);
+
   return selector(fullState);
 }
 

@@ -49,9 +49,11 @@ export class ModelLifecycleService {
   private imageModelState: ModelState = createInitialModelState();
   private activeTextModel: 'fast' | 'quality' = 'fast';
   private stateSubscribers: Set<(states: ModelStates) => void> = new Set();
+  private snapshot: ModelStates | null = null;
 
   constructor(config: ModelLifecycleConfig) {
     this.workerService = config.workerService;
+    this.snapshot = this.getStates();
   }
 
   /**
@@ -67,6 +69,13 @@ export class ModelLifecycleService {
   }
 
   /**
+   * Get snapshot for useSyncExternalStore - returns stable reference
+   */
+  getSnapshot(): ModelStates {
+    return this.snapshot!;
+  }
+
+  /**
    * Subscribe to state changes
    */
   subscribeState(callback: (states: ModelStates) => void): () => void {
@@ -78,7 +87,10 @@ export class ModelLifecycleService {
    * Notify state subscribers
    */
   private notifyStateChange(): void {
-    const states = this.getStates();
+    // Update snapshot with new state
+    this.snapshot = this.getStates();
+    
+    const states = this.snapshot;
     for (const callback of this.stateSubscribers) {
       try {
         callback(states);
