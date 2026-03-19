@@ -108,11 +108,11 @@ export const ModelProvider: React.FC<ModelProviderProps> = ({
   children,
   workerUrl,
 }) => {
-  // Service instances
-  const workerServiceRef = useRef<WorkerService | null>(null);
-  const modelLifecycleRef = useRef<ModelLifecycleService | null>(null);
-  const generationRef = useRef<GenerationService | null>(null);
-  const storageRef = useRef<StorageService | null>(null);
+  // Service instances - initialized immediately to avoid null checks in hooks
+  const workerServiceRef = useRef<WorkerService>(getWorkerService());
+  const modelLifecycleRef = useRef<ModelLifecycleService>(new ModelLifecycleService({ workerService: getWorkerService() }));
+  const generationRef = useRef<GenerationService>(new GenerationService({ workerService: getWorkerService() }));
+  const storageRef = useRef<StorageService>(new StorageService());
 
   // State from services
   const [modelStates, setModelStates] = useState<ModelStates>({
@@ -145,27 +145,16 @@ export const ModelProvider: React.FC<ModelProviderProps> = ({
   // Initialize services on mount
   useEffect(() => {
     // Initialize worker service
-    const workerService = getWorkerService();
+    const workerService = workerServiceRef.current;
     if (workerUrl) {
       workerService.initialize(workerUrl);
     } else {
       const worker = new GenerationWorker();
       workerService.initializeWithWorker(worker);
     }
-    workerServiceRef.current = workerService;
-
-    // Initialize other services
-    const modelLifecycle = new ModelLifecycleService({ workerService });
-    modelLifecycleRef.current = modelLifecycle;
-
-    const generation = new GenerationService({ workerService });
-    generationRef.current = generation;
-
-    const storage = new StorageService();
-    storageRef.current = storage;
 
     // Subscribe to model state changes
-    const unsubscribeStates = modelLifecycle.subscribeState(setModelStates);
+    const unsubscribeStates = modelLifecycleRef.current?.subscribeState(setModelStates);
 
     // Subscribe to worker events
     const unsubscribeStart = workerService.subscribe('PAGE_START', (payload) => {
@@ -281,8 +270,8 @@ export const ModelProvider: React.FC<ModelProviderProps> = ({
       unsubscribeQueue();
       unsubscribeCancelled();
 
-      generation?.cleanup();
-      workerService.cleanup();
+      generationRef.current?.cleanup();
+      workerServiceRef.current?.cleanup();
     };
   }, [workerUrl]);
 
@@ -504,10 +493,10 @@ export interface ModelContextState extends ModelStates {
 
 /**
  * useModelStore - Custom hook using useSyncExternalStore for efficient subscriptions
- * 
+ *
  * This allows components to subscribe to specific slices of model state,
  * preventing global re-renders when progress ticks occur.
- * 
+ *
  * @param selector - Function to select specific state from ModelContextState
  * @returns Selected state slice
  */
@@ -515,11 +504,11 @@ export function useModelStore<T>(selector: (states: ModelContextState) => T): T 
   // Get the service instance from a ref maintained by ModelProvider
   const serviceRef = useContext(ModelServiceInstanceContext);
   const stateContext = useContext(ModelStateContext);
-  
-  if (!serviceRef?.current || !stateContext) {
+
+  if (!serviceRef || !serviceRef.current || !stateContext) {
     throw new Error('useModelStore must be used within a ModelProvider');
   }
-  
+
   const service = serviceRef.current;
   
   // useSyncExternalStore subscribes to ModelLifecycleService state changes
